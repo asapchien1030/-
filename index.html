@@ -1,0 +1,260 @@
+ride.joinedUsers && ride.joinedUsers.includes(currentUser.uid);
+                
+                // 計算當前人數/位置狀態
+                const currentCount = ride.joinedUsers ? ride.joinedUsers.length : 0;
+                const displayTime = new Date(ride.time).toLocaleString('zh-TW', {
+                    month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'
+                });
+
+                const card = document.createElement('div');
+                card.className = "bg-white border border-neutral-100 rounded-2xl p-5 shadow-sm space-y-4 relative overflow-hidden";
+                
+                // 左側標籤（找車中 / 有座位）
+                const badgeClass = ride.type === 'driver' ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-blue-700';
+                const badgeText = ride.type === 'driver' ? '🚗 司機有空位' : '🙋 乘客求拼車';
+
+                card.innerHTML = `
+                    <div class="flex justify-between items-start">
+                        <span class="text-xs font-bold px-2.5 py-1 rounded-md ${badgeClass}">${badgeText}</span>
+                        <p class="text-xs font-semibold text-neutral-400 flex items-center gap-1">
+                            <i data-lucide="clock" class="w-3.5 h-3.5"></i> ${displayTime}
+                        </p>
+                    </div>
+
+                    <div class="space-y-2">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full bg-neutral-400"></span>
+                            <p class="text-sm font-medium text-neutral-500 truncate"><span class="text-xs text-neutral-400 font-normal">從</span> ${ride.from}</p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full bg-black"></span>
+                            <p class="text-sm font-bold text-neutral-800 truncate"><span class="text-xs text-neutral-400 font-normal">到</span> ${ride.to}</p>
+                        </div>
+                    </div>
+
+                    <div class="pt-3 border-t border-neutral-50 flex justify-between items-center">
+                        <div class="text-left">
+                            <p class="text-[11px] text-neutral-400 font-medium">發布者: ${ride.creatorName || '匿名'}</p>
+                            <p class="text-xs font-bold text-neutral-700 mt-0.5">
+                                ${ride.type === 'driver' ? `已載 ${currentCount} / ${ride.capacity} 人` : `同行人數: ${ride.capacity} 人`}
+                            </p>
+                        </div>
+                        <div class="flex gap-2">
+                            ${isJoined ? `
+                                <button onclick="enterChat('${ride.id}', '${ride.from} → ${ride.to}', '${ride.type}')" class="bg-neutral-900 text-white text-xs font-bold px-3 py-2 rounded-xl btn-click flex items-center gap-1">
+                                    <i data-lucide="message-square" class="w-3.5 h-3.5"></i> 討論
+                                </button>
+                                ${!isCreator ? `
+                                    <button onclick="leaveRide('${ride.id}')" class="bg-red-50 text-red-600 text-xs font-bold px-3 py-2 rounded-xl btn-click">退出</button>
+                                ` : ''}
+                            ` : `
+                                <button onclick="joinRide('${ride.id}')" class="bg-neutral-100 text-neutral-900 hover:bg-black hover:text-white text-xs font-bold px-4 py-2 rounded-xl transition-all btn-click">
+                                    加入拼車
+                                </button>
+                            `}
+                        </div>
+                    </div>
+                `;
+                listContainer.appendChild(card);
+            });
+            lucide.createIcons();
+        }
+
+        // ==================== 加入 / 退出拼車項目 ====================
+
+        window.joinRide = async function(rideId) {
+            if (!currentUser) { openLoginModal(); showToast("請先快速登入唷！"); return; }
+            try {
+                const userProfile = await getDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data'));
+                const nickname = userProfile.exists() ? userProfile.data().nickname : '匿名同學';
+
+                const rideRef = doc(db, 'artifacts', appId, 'public', 'data', 'rides', rideId);
+                const rideDoc = await getDoc(rideRef);
+                if (!rideDoc.exists()) return;
+
+                const data = rideDoc.data();
+                if (data.joinedUsers && data.joinedUsers.includes(currentUser.uid)) {
+                    showToast("你已經在行程中囉！");
+                    return;
+                }
+
+                if (data.type === 'driver' && data.joinedUsers && data.joinedUsers.length >= data.capacity) {
+                    showToast("糟糕，這台車已經客滿囉！");
+                    return;
+                }
+
+                const updatedUsers = [...(data.joinedUsers || []), currentUser.uid];
+                const updatedNames = [...(data.joinedUserNames || []), nickname];
+
+                await updateDoc(rideRef, {
+                    joinedUsers: updatedUsers,
+                    joinedUserNames: updatedNames
+                });
+
+                showToast("成功加入拼車項目！點擊「討論」開始聊行程吧");
+            } catch (err) {
+                console.error("Join Error:", err);
+                showToast("加入失敗，請稍後再試");
+            }
+        };
+
+        window.leaveRide = async function(rideId) {
+            if (!currentUser) return;
+            if (!confirm("確定要退出此拼車行程嗎？")) return;
+            try {
+                const rideRef = doc(db, 'artifacts', appId, 'public', 'data', 'rides', rideId);
+                const rideDoc = await getDoc(rideRef);
+                if (!rideDoc.exists()) return;
+
+                const data = rideDoc.data();
+                const userIdx = data.joinedUsers.indexOf(currentUser.uid);
+                
+                if (userIdx > -1) {
+                    const updatedUsers = [...data.joinedUsers];
+                    const updatedNames = [...data.joinedUserNames];
+                    updatedUsers.splice(userIdx, 1);
+                    updatedNames.splice(userIdx, 1);
+
+                    await updateDoc(rideRef, {
+                        joinedUsers: updatedUsers,
+                        joinedUserNames: updatedNames
+                    });
+                    showToast("已成功退出該拼車項目");
+                }
+            } catch (err) {
+                console.error("Leave Error:", err);
+                showToast("退出失敗");
+            }
+        };
+
+        // ==================== 即時聊天室討論群組 ====================
+
+        window.enterChat = function(rideId, routeTitle, typeText) {
+            activeChatRideId = rideId;
+            switchTab('chat');
+            
+            document.getElementById('chat-title-route').innerText = routeTitle;
+            document.getElementById('chat-badge-type').innerText = typeText === 'driver' ? '車主團' : '乘客團';
+            
+            const messagesContainer = document.getElementById('chat-messages');
+            messagesContainer.innerHTML = '<div class="text-center py-4 text-xs text-neutral-400">建立安全加密對話中...</div>';
+
+            // 建立對應行程的聊天子集合即時監聽
+            const chatRef = collection(db, 'artifacts', appId, 'public', 'data', 'rides', rideId, 'messages');
+            
+            chatUnsubscribe = onSnapshot(chatRef, (snapshot) => {
+                const msgs = [];
+                snapshot.forEach(doc => msgs.push({ id: doc.id, ...doc.data() }));
+                
+                // 排序時間
+                msgs.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+                
+                messagesContainer.innerHTML = '';
+                if(msgs.length === 0) {
+                    messagesContainer.innerHTML = '<div class="text-center py-8 text-xs text-neutral-400">目前還沒有訊息，發個招呼約定集合地點吧！</div>';
+                }
+
+                msgs.forEach(msg => {
+                    const isMe = currentUser && msg.senderId === currentUser.uid;
+                    const msgWrapper = document.createElement('div');
+                    msgWrapper.className = `flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[85%] ${isMe ? 'ml-auto' : 'mr-auto'}`;
+                    
+                    msgWrapper.innerHTML = `
+                        <span class="text-[10px] text-neutral-400 mb-0.5 px-1">${msg.senderName}</span>
+                        <div class="px-4 py-2.5 rounded-2xl text-sm ${isMe ? 'bg-black text-white rounded-tr-none' : 'bg-neutral-100 text-neutral-800 rounded-tl-none'} break-all shadow-sm">
+                            ${msg.text}
+                        </div>
+                    `;
+                    messagesContainer.appendChild(msgWrapper);
+                });
+
+                // 滾動到最底部
+                setTimeout(() => {
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }, 50);
+            });
+        };
+
+        window.sendChatMessage = async function(e) {
+            e.preventDefault();
+            const input = document.getElementById('chat-input');
+            const text = input.value.trim();
+            if (!text || !activeChatRideId || !currentUser) return;
+
+            try {
+                const userProfile = await getDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data'));
+                const nickname = userProfile.exists() ? userProfile.data().nickname : '同學';
+                
+                const chatRef = collection(db, 'artifacts', appId, 'public', 'data', 'rides', activeChatRideId, 'messages');
+                input.value = '';
+
+                await addDoc(chatRef, {
+                    senderId: currentUser.uid,
+                    senderName: nickname,
+                    text: text,
+                    timestamp: new Date().toISOString()
+                });
+            } catch (err) {
+                console.error("Chat Send Error:", err);
+                showToast("訊息傳送失敗");
+            }
+        };
+
+        // ==================== 後台系統項目管理 ====================
+
+        function renderAdminRides() {
+            const container = document.getElementById('admin-rides-list');
+            container.innerHTML = '';
+
+            if (currentRides.length === 0) {
+                container.innerHTML = '<p class="text-xs text-neutral-400 text-center py-4">平台目前無任何行程數據</p>';
+                return;
+            }
+
+            currentRides.forEach(ride => {
+                const item = document.createElement('div');
+                item.className = "bg-white p-3.5 rounded-xl border border-neutral-100 flex justify-between items-center text-xs";
+                item.innerHTML = `
+                    <div class="space-y-0.5 max-w-[70%]">
+                        <p class="font-bold text-neutral-800 truncate">${ride.from} → ${ride.to}</p>
+                        <p class="text-neutral-400 text-[11px]">發布: ${ride.creatorName} | 人數: ${ride.capacity}</p>
+                    </div>
+                    <button onclick="deleteRide('${ride.id}')" class="bg-red-50 hover:bg-red-500 hover:text-white text-red-600 px-2.5 py-1.5 rounded-lg font-medium transition-all btn-click">
+                        下架清理
+                    </button>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        window.deleteRide = async function(rideId) {
+            if (!confirm("確定要下架並徹底刪除這筆拼車項目嗎？(此操作不可逆)")) return;
+            try {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rides', rideId));
+                showToast("項目已從校園資料庫安全移除");
+            } catch (err) {
+                console.error("Delete Error:", err);
+                showToast("刪除失敗，權限不足");
+            }
+        };
+
+        // ==================== 全域 Toast 通知中心 ====================
+
+        window.showToast = function(msg) {
+            const toast = document.getElementById('toast');
+            document.getElementById('toast-text').innerText = msg;
+            
+            // 彈出動畫
+            toast.classList.remove('translate-y-[-100px]', 'opacity-0');
+            toast.classList.add('translate-y-0', 'opacity-100');
+            
+            // 3秒後自動收回
+            setTimeout(() => {
+                toast.classList.remove('translate-y-0', 'opacity-100');
+                toast.classList.add('translate-y-[-100px]', 'opacity-0');
+            }, 3000);
+        };
+
+    </script>
+</body>
+</html>
