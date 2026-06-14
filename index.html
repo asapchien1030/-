@@ -1,1209 +1,1242 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>拼一下 - 長庚專屬拼車媒合</title>
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <!-- Firebase SDKs -->
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js" type="module"></script>
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js" type="module"></script>
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js" type="module"></script>
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  addDoc, 
+  updateDoc, 
+  onSnapshot, 
+  serverTimestamp 
+} from 'firebase/firestore';
+
+// --- Firebase 初始化配置 ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'cgu-cgust-ride-share';
+
+// 快捷地點推薦
+const POPULAR_LOCATIONS = [
+  "長庚大學校門口",
+  "長庚科大守衛室",
+  "林口長庚醫院",
+  "捷運 A8 長庚醫院站",
+  "桃園高鐵站",
+  "台北車站"
+];
+
+export default function App() {
+  // --- 狀態管理 ---
+  const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null); // { nickname, phone, school }
+  const [loading, setLoading] = useState(true);
+  const [dbConnected, setDbConnected] = useState(false);
+
+  // 導覽狀態：'landing' | 'home' | 'passenger_form' | 'host_form' | 'rides_list' | 'chat'
+  const [screen, setScreen] = useState('landing');
+  
+  // 表單資料輸入狀態
+  const [loginForm, setLoginForm] = useState({ nickname: '', phone: '', school: '' });
+  const [passengerForm, setPassengerForm] = useState({ start: '', destination: '', time: '', seats: '3' });
+  const [hostForm, setHostForm] = useState({ start: '', destination: '', time: '', seats: '3' });
+  
+  // 列表與聊天狀態
+  const [rides, setRides] = useState([]);
+  const [filterType, setFilterType] = useState('all'); // 'all' | 'passenger' | 'host'
+  const [activeRideId, setActiveRideId] = useState(null);
+  const [allMessages, setAllMessages] = useState([]);
+  const [chatMessage, setChatMessage] = useState('');
+  
+  const messagesEndRef = useRef(null);
+
+  // --- 1. 身分驗證連線 (Rule 3) ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+        setDbConnected(true);
+      } catch (err) {
+        console.error("Firebase 認證失敗:", err);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (!currentUser) {
+        setLoading(false);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- 2. 獲取使用者註冊設定檔 ---
+  useEffect(() => {
+    if (!user) return;
+
+    // 讀取私有資料區 profile info (Rule 1)
+    const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'info');
     
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
-        
-        body {
-            font-family: 'Inter', 'Noto Sans TC', sans-serif;
-            background-color: #FAFAFA;
-            -webkit-tap-highlight-color: transparent;
+    const fetchProfile = async () => {
+      try {
+        const docSnap = await getDoc(profileRef);
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          setProfile(data);
+          setLoginForm({ nickname: data.nickname, phone: data.phone, school: data.school });
+          setScreen('home'); // 如果有舊資料直接進入首頁
+        } else {
+          setScreen('landing'); // 沒有設定檔就停在註冊登入頁
         }
+      } catch (err) {
+        console.error("獲取個人檔案失敗:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-        /* 擬真 Uber 極簡回彈與點擊效果 */
-        .btn-active-effect:active {
-            transform: scale(0.97);
-            background-color: #111111;
-        }
-        
-        .btn-secondary-active:active {
-            transform: scale(0.97);
-            background-color: #F3F4F6;
-        }
+    fetchProfile();
+  }, [user]);
 
-        /* 隱藏滾動條但保持滾動 */
-        .no-scrollbar::-webkit-scrollbar {
-            display: none;
-        }
-        .no-scrollbar {
-            -ms-overflow-style: none;
-            scrollbar-width: none;
-        }
-    </style>
-</head>
-<body class="flex justify-center items-start min-h-screen">
+  // --- 3. 即時訂閱拼車清單 (Rule 2: 不使用複雜 Query，拿到所有資料後在前端排序篩選) ---
+  useEffect(() => {
+    if (!user) return;
 
-    <!-- 主容器，限制手機版寬度、模擬精美 App 外觀 -->
-    <div id="app-container" class="w-full max-w-md min-h-screen bg-white shadow-xl flex flex-col justify-between relative overflow-x-hidden">
+    const ridesRef = collection(db, 'artifacts', appId, 'public', 'data', 'rides');
+    const unsubscribe = onSnapshot(ridesRef, (snapshot) => {
+      const list = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() });
+      });
+      // 依時間戳記排序
+      list.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      setRides(list);
+    }, (error) => {
+      console.error("即時同步拼車清單失敗:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- 4. 即時訂閱聊天室訊息 ---
+  useEffect(() => {
+    if (!user) return;
+
+    const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+    const unsubscribe = onSnapshot(messagesRef, (snapshot) => {
+      const list = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() });
+      });
+      // 在前端進行排序
+      list.sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
+      setAllMessages(list);
+    }, (error) => {
+      console.error("即時同步對話訊息失敗:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // 滑動聊天室到底部
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [allMessages, screen]);
+
+  // --- 5. 商業邏輯與按鈕事件處理 ---
+
+  // 註冊登入
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    if (!loginForm.school) {
+      alertToast("請選擇【長庚大學CGU】或【長庚科大Cgust】！");
+      return;
+    }
+    if (!loginForm.nickname.trim() || !loginForm.phone.trim()) {
+      alertToast("請填寫您的暱稱與電話！");
+      return;
+    }
+
+    if (!user) return;
+
+    try {
+      const profileData = {
+        uid: user.uid,
+        nickname: loginForm.nickname.trim(),
+        phone: loginForm.phone.trim(),
+        school: loginForm.school,
+        updatedAt: serverTimestamp()
+      };
+
+      // 儲存至私有使用者區塊
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'info'), profileData);
+      setProfile(profileData);
+      setScreen('home');
+    } catch (err) {
+      console.error("儲存個人檔案失敗:", err);
+      alertToast("登入設定失敗，請重試");
+    }
+  };
+
+  // 登出/更換帳號
+  const handleLogout = () => {
+    setProfile(null);
+    setLoginForm({ nickname: '', phone: '', school: '' });
+    setScreen('landing');
+  };
+
+  // 送出我要找拼車 (乘客端)
+  const handlePassengerSubmit = async (e) => {
+    e.preventDefault();
+    if (!passengerForm.start.trim() || !passengerForm.destination.trim() || !passengerForm.time.trim()) {
+      alertToast("請填寫完整出發地、目的地與時間");
+      return;
+    }
+
+    try {
+      const ridesRef = collection(db, 'artifacts', appId, 'public', 'data', 'rides');
+      await addDoc(ridesRef, {
+        type: 'passenger', // 乘客找車
+        start: passengerForm.start.trim(),
+        destination: passengerForm.destination.trim(),
+        time: passengerForm.time,
+        seats: parseInt(passengerForm.seats), // 想要拼幾個人
+        creator: {
+          uid: user.uid,
+          nickname: profile.nickname,
+          phone: profile.phone,
+          school: profile.school
+        },
+        joinedUsers: [], // 已加入的其他隊友
+        createdAt: serverTimestamp()
+      });
+
+      // 重置表單並跳轉
+      setPassengerForm({ start: '', destination: '', time: '', seats: '3' });
+      setScreen('rides_list');
+    } catch (err) {
+      console.error("發布乘客需求失敗:", err);
+      alertToast("送出失敗，請確認網路連線");
+    }
+  };
+
+  // 發布叫車座位 (司機/主揪端)
+  const handleHostSubmit = async (e) => {
+    e.preventDefault();
+    if (!hostForm.start.trim() || !hostForm.destination.trim() || !hostForm.time.trim()) {
+      alertToast("請填寫完整出發地、目的地與時間");
+      return;
+    }
+
+    try {
+      const ridesRef = collection(db, 'artifacts', appId, 'public', 'data', 'rides');
+      await addDoc(ridesRef, {
+        type: 'host', // 我叫車，找分攤的人
+        start: hostForm.start.trim(),
+        destination: hostForm.destination.trim(),
+        time: hostForm.time,
+        seats: parseInt(hostForm.seats), // 可提供空位數
+        creator: {
+          uid: user.uid,
+          nickname: profile.nickname,
+          phone: profile.phone,
+          school: profile.school
+        },
+        joinedUsers: [], // 已加入的其他隊友
+        createdAt: serverTimestamp()
+      });
+
+      // 重置表單並跳轉
+      setHostForm({ start: '', destination: '', time: '', seats: '3' });
+      setScreen('rides_list');
+    } catch (err) {
+      console.error("發布座位失敗:", err);
+      alertToast("送出失敗，請確認網路連線");
+    }
+  };
+
+  // 加入拼車
+  const handleJoinRide = async (ride) => {
+    if (ride.creator.uid === user.uid) {
+      alertToast("您是此拼車的發起人，不需重複加入！");
+      return;
+    }
+
+    const isAlreadyJoined = ride.joinedUsers.some(u => u.uid === user.uid);
+    if (isAlreadyJoined) {
+      // 如果已經加入了，點擊就直接帶入聊天室
+      setActiveRideId(ride.id);
+      setScreen('chat');
+      return;
+    }
+
+    // 計算剩餘座位
+    const currentJoinedCount = ride.joinedUsers.length;
+    if (currentJoinedCount >= ride.seats) {
+      alertToast("此拼車名額已滿囉！");
+      return;
+    }
+
+    try {
+      const rideDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'rides', ride.id);
+      const updatedJoined = [...ride.joinedUsers, {
+        uid: user.uid,
+        nickname: profile.nickname,
+        phone: profile.phone,
+        school: profile.school
+      }];
+
+      await updateDoc(rideDocRef, {
+        joinedUsers: updatedJoined
+      });
+
+      // 自動發送一條系統消息進聊天室
+      const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+      await addDoc(messagesRef, {
+        rideId: ride.id,
+        sender: { uid: 'system', nickname: '系統通知' },
+        text: `🎉 ${profile.nickname} 已成功加入拼車隊伍！`,
+        createdAt: serverTimestamp()
+      });
+
+      setActiveRideId(ride.id);
+      setScreen('chat');
+      alertToast("成功加入！已為您開啟專屬協調聊天室 🚗");
+    } catch (err) {
+      console.error("加入拼車失敗:", err);
+      alertToast("加入失敗，請重試");
+    }
+  };
+
+  // 取消或退出拼車
+  const handleLeaveOrCancelRide = async (ride) => {
+    const isCreator = ride.creator.uid === user.uid;
+
+    if (isCreator) {
+      if (!confirm("確定要取消此拼車計畫嗎？這會移除此拼車卡片。")) return;
+      try {
+        // 這邊我們直接更新資料，或您可以選擇刪除。為避免直接刪除導致聊天紀錄遺失，我們可以在此更新狀態為已取消，
+        // 或是為保持操作乾淨，直接從 database 刪除該乘車文件。
+        const rideDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'rides', ride.id);
+        // 直接刪除此協調文件
+        // deleteDoc 目前沒有 import 也可以使用 update 標記「已取消」
+        await updateDoc(rideDocRef, { isCancelled: true });
         
-        <!-- 全域載入狀態遮罩 -->
-        <div id="global-loader" class="absolute inset-0 bg-white/90 z-50 flex flex-col justify-center items-center transition-all duration-300">
-            <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-black mb-3"></div>
-            <p class="text-sm text-gray-500 font-medium">安全連接中...</p>
+        // 發送通知
+        const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+        await addDoc(messagesRef, {
+          rideId: ride.id,
+          sender: { uid: 'system', nickname: '系統通知' },
+          text: `⚠️ 發起人已取消此拼車計畫。`,
+          createdAt: serverTimestamp()
+        });
+
+        setScreen('rides_list');
+        alertToast("已取消拼車需求。");
+      } catch (err) {
+        console.error("取消拼車失敗:", err);
+      }
+    } else {
+      if (!confirm("確定要退出此拼車嗎？")) return;
+      try {
+        const rideDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'rides', ride.id);
+        const updatedJoined = ride.joinedUsers.filter(u => u.uid !== user.uid);
+        
+        await updateDoc(rideDocRef, {
+          joinedUsers: updatedJoined
+        });
+
+        // 發送通知
+        const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+        await addDoc(messagesRef, {
+          rideId: ride.id,
+          sender: { uid: 'system', nickname: '系統通知' },
+          text: `🚪 ${profile.nickname} 已退出此拼車。`,
+          createdAt: serverTimestamp()
+        });
+
+        setScreen('rides_list');
+        alertToast("已安全退出該拼車項目。");
+      } catch (err) {
+        console.error("退出拼車失敗:", err);
+      }
+    }
+  };
+
+  // 發送聊天訊息
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!chatMessage.trim()) return;
+
+    try {
+      const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+      await addDoc(messagesRef, {
+        rideId: activeRideId,
+        sender: {
+          uid: user.uid,
+          nickname: profile.nickname,
+          school: profile.school
+        },
+        text: chatMessage.trim(),
+        createdAt: serverTimestamp()
+      });
+      setChatMessage('');
+    } catch (err) {
+      console.error("發送訊息失敗:", err);
+    }
+  };
+
+  // Toast 模擬（不使用 window.alert 以維護最佳 iframe 體驗）
+  const [toastMsg, setToastMsg] = useState('');
+  const alertToast = (msg) => {
+    setToastMsg(msg);
+    setTimeout(() => {
+      setToastMsg('');
+    }, 3000);
+  };
+
+  // 過濾當前要顯示的拼車
+  const activeRides = rides.filter(ride => {
+    if (ride.isCancelled) return false;
+    if (filterType === 'passenger') return ride.type === 'passenger';
+    if (filterType === 'host') return ride.type === 'host';
+    return true;
+  });
+
+  // 我的拼車（用於首頁下方快速入口）
+  const myRides = rides.filter(ride => {
+    if (ride.isCancelled) return false;
+    const isCreator = ride.creator.uid === user?.uid;
+    const isJoined = ride.joinedUsers?.some(u => u.uid === user?.uid);
+    return isCreator || isJoined;
+  });
+
+  const activeRideData = rides.find(r => r.id === activeRideId);
+  const activeMessages = allMessages.filter(m => m.rideId === activeRideId);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-white flex flex-col justify-center items-center p-4">
+        <div className="w-12 h-12 border-4 border-slate-900 border-t-transparent rounded-full animate-spin mb-4"></div>
+        <p className="text-slate-600 font-medium">拼一下 • 即時連線載入中...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex justify-center text-slate-900 font-sans antialiased selection:bg-slate-900 selection:text-white">
+      
+      {/* 行動裝置外框 (當在桌面環境時置中顯示) */}
+      <div className="w-full max-w-[480px] bg-white min-h-screen shadow-2xl relative flex flex-col overflow-hidden border-x border-slate-100">
+        
+        {/* 連線狀態條 */}
+        <div className="bg-slate-900 text-white text-[11px] px-4 py-1.5 flex justify-between items-center select-none shrink-0">
+          <div className="flex items-center space-x-1">
+            <span className={`w-2 h-2 rounded-full inline-block ${dbConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+            <span className="font-semibold tracking-wide">長庚專屬拼車 • GoTogether</span>
+          </div>
+          <span className="opacity-80">即時連線中</span>
         </div>
 
-        <!-- 1. 登錄頁面 (Landing & Login) -->
-        <section id="page-login" class="flex-1 flex flex-col justify-between p-6 hidden">
-            <!-- 上半部：品牌視覺 -->
-            <div class="pt-12">
-                <div class="flex items-center gap-2 mb-2">
-                    <span class="bg-black text-white px-3 py-1 text-xs font-black rounded-full tracking-wider">CGU & CGUST</span>
-                </div>
-                <h1 class="text-4xl font-extrabold text-black tracking-tight mb-2">拼一下</h1>
-                <p class="text-gray-500 text-sm leading-relaxed">
-                    長庚大學與長庚科大專屬的極簡拼車媒合平台。<br>
-                    下課不孤單，一秒找到最佳車友。
-                </p>
+        {/* 1. 登錄註冊頁面 (Landing Page) */}
+        {screen === 'landing' && (
+          <div className="flex-1 flex flex-col justify-between p-6 bg-white">
+            
+            {/* Header 介紹 */}
+            <div className="pt-8 text-center">
+              <div className="inline-flex items-center justify-center w-16 h-16 rounded-3xl bg-slate-900 text-white text-3xl font-black shadow-lg mb-4 transform hover:scale-105 transition-all">
+                拼
+              </div>
+              <h1 className="text-3xl font-extrabold tracking-tight text-slate-950">拼一下 !</h1>
+              <p className="text-sm text-slate-500 mt-2 font-medium">長庚大學 / 長庚科大 專屬極簡拼車媒合平台</p>
             </div>
 
-            <!-- 中半部：身分選擇與輸入欄位 -->
-            <div class="my-auto py-8 space-y-6">
-                <!-- 學校選擇按鈕 (兩個主按鈕) -->
+            {/* 登入表單核心 */}
+            <form onSubmit={handleLogin} className="space-y-6 my-auto">
+              
+              {/* 學校二選一主按鈕 */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 text-center">
+                  選擇您的學校 (單選)
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setLoginForm({ ...loginForm, school: '長庚大學 CGU' })}
+                    className={`py-4 px-3 rounded-2xl border-2 transition-all duration-200 active:scale-95 text-center flex flex-col justify-center items-center ${
+                      loginForm.school === '長庚大學 CGU'
+                        ? 'border-slate-900 bg-slate-900 text-white shadow-md'
+                        : 'border-slate-200 text-slate-700 hover:border-slate-400'
+                    }`}
+                  >
+                    <span className="font-extrabold text-base tracking-wide">長庚大學</span>
+                    <span className="text-[10px] opacity-70 mt-1">CGU</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setLoginForm({ ...loginForm, school: '長庚科大 CGUST' })}
+                    className={`py-4 px-3 rounded-2xl border-2 transition-all duration-200 active:scale-95 text-center flex flex-col justify-center items-center ${
+                      loginForm.school === '長庚科大 CGUST'
+                        ? 'border-slate-900 bg-slate-900 text-white shadow-md'
+                        : 'border-slate-200 text-slate-700 hover:border-slate-400'
+                    }`}
+                  >
+                    <span className="font-extrabold text-base tracking-wide">長庚科大</span>
+                    <span className="text-[10px] opacity-70 mt-1">CGUST</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 暱稱與電話輸入區 */}
+              <div className="space-y-4">
                 <div>
-                    <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">選擇您的學校</label>
-                    <div class="grid grid-cols-2 gap-3">
-                        <button type="button" id="btn-select-cgu" class="py-4 px-4 rounded-2xl border-2 border-gray-100 text-center font-bold text-gray-600 transition-all duration-200 focus:outline-none flex flex-col items-center justify-center gap-1">
-                            <span class="text-base">長庚大學</span>
-                            <span class="text-[10px] text-gray-400 font-normal">CGU</span>
-                        </button>
-                        <button type="button" id="btn-select-cgust" class="py-4 px-4 rounded-2xl border-2 border-gray-100 text-center font-bold text-gray-600 transition-all duration-200 focus:outline-none flex flex-col items-center justify-center gap-1">
-                            <span class="text-base">長庚科大</span>
-                            <span class="text-[10px] text-gray-400 font-normal">CGUST</span>
-                        </button>
-                    </div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">
+                    您的暱稱
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="例如：林口王陽明、小陳"
+                    value={loginForm.nickname}
+                    onChange={(e) => setLoginForm({ ...loginForm, nickname: e.target.value })}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-950 focus:bg-white transition-all text-sm font-medium"
+                  />
                 </div>
 
-                <!-- 暱稱與電話欄位 -->
-                <div class="space-y-4">
-                    <div>
-                        <label for="input-nickname" class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">暱稱</label>
-                        <input type="text" id="input-nickname" placeholder="例如：大園彭于晏" class="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all">
-                    </div>
-                    <div>
-                        <label for="input-phone" class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">聯絡電話 (僅同行車友可見)</label>
-                        <input type="tel" id="input-phone" placeholder="例如：0912345678" class="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all">
-                    </div>
-                </div>
-            </div>
-
-            <!-- 下半部：登入按鈕 -->
-            <div class="pb-6">
-                <button id="btn-login-submit" class="w-full py-4 bg-black text-white font-bold rounded-2xl shadow-lg shadow-black/10 btn-active-effect transition-all flex items-center justify-center gap-2">
-                    <span>進入拼車大廳</span>
-                    <i data-lucide="arrow-right" class="w-5 h-5"></i>
-                </button>
-                <p class="text-center text-[11px] text-gray-400 mt-3">進入即代表您同意本平台的乘車互助安全規範</p>
-            </div>
-        </section>
-
-        <!-- 2. 首頁大廳 (Home Menu) -->
-        <section id="page-home" class="flex-1 flex flex-col justify-between p-6 hidden">
-            <!-- 頂部狀態列 -->
-            <div class="flex justify-between items-center pt-4">
                 <div>
-                    <span id="user-school-tag" class="bg-gray-100 text-gray-800 text-[11px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider">CGU</span>
-                    <h2 class="text-2xl font-bold text-black mt-1.5"><span id="user-display-name">你好</span>，出發去哪？</h2>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">
+                    聯絡電話 (僅配對成功夥伴可見)
+                  </label>
+                  <input
+                    type="tel"
+                    required
+                    placeholder="例如：0912345678"
+                    value={loginForm.phone}
+                    onChange={(e) => setLoginForm({ ...loginForm, phone: e.target.value })}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-950 focus:bg-white transition-all text-sm font-medium"
+                  />
                 </div>
-                <button id="btn-logout" class="p-2.5 text-gray-400 hover:text-black rounded-full border border-gray-100 btn-secondary-active transition-all" title="登出">
-                    <i data-lucide="log-out" class="w-5 h-5"></i>
+              </div>
+
+              {/* 開始按鈕 */}
+              <button
+                type="submit"
+                className="w-full bg-slate-900 hover:bg-slate-850 active:scale-98 text-white font-extrabold py-4 px-6 rounded-2xl tracking-wide transition-all duration-150 shadow-md flex items-center justify-center space-x-2 text-base"
+              >
+                <span>開始預約拼車</span>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+              </button>
+            </form>
+
+            <div className="text-center text-xs text-slate-400">
+              安全隱私保護 • 僅限長庚教職員學生交流使用
+            </div>
+          </div>
+        )}
+
+        {/* 2. 首頁 (Home Screen) */}
+        {screen === 'home' && profile && (
+          <div className="flex-1 flex flex-col justify-between p-6 bg-white overflow-y-auto">
+            
+            {/* 上半部：個人狀態資訊 */}
+            <div>
+              <div className="flex justify-between items-center pb-6 border-b border-slate-100">
+                <div>
+                  <span className="text-[11px] font-bold text-indigo-600 uppercase tracking-widest block mb-0.5">{profile.school}</span>
+                  <h2 className="text-xl font-black text-slate-900">哈囉，{profile.nickname} 👋</h2>
+                </div>
+                <button 
+                  onClick={handleLogout}
+                  className="p-2 text-slate-400 hover:text-rose-500 rounded-full active:scale-90 transition-all"
+                  title="登出更換身分"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
                 </button>
+              </div>
+
+              {/* 呼應 Uber 的乾淨大 Banner */}
+              <div className="my-6 p-5 bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950 text-white rounded-3xl relative overflow-hidden shadow-md">
+                <div className="relative z-10">
+                  <h3 className="text-lg font-bold">與同學一起省錢省時</h3>
+                  <p className="text-xs text-slate-300 mt-1 max-w-[200px]">快速湊滿 4 人分攤林口計程車資，不用再辛苦排隊等公車。</p>
+                </div>
+                <div className="absolute right-[-10px] bottom-[-20px] text-white opacity-10 text-[100px] font-bold pointer-events-none select-none font-serif">
+                  CGU
+                </div>
+              </div>
+
+              {/* 三大主按鈕區域 */}
+              <div className="space-y-4">
+                <button
+                  onClick={() => setScreen('passenger_form')}
+                  className="w-full bg-slate-50 hover:bg-slate-100 active:scale-95 border-2 border-slate-100 hover:border-slate-200 py-5 px-6 rounded-2xl transition-all duration-200 text-left flex items-center justify-between"
+                >
+                  <div className="flex items-center space-x-4">
+                    <div className="w-12 h-12 rounded-xl bg-slate-900 text-white flex items-center justify-center">
+                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                    </div>
+                    <div>
+                      <h4 className="font-extrabold text-slate-950 text-base">我要找拼車</h4>
+                      <p className="text-xs text-slate-500 mt-0.5">我是想搭計程車、正在尋找主揪的乘客</p>
+                    </div>
+                  </div>
+                  <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7"/></svg>
+                </button>
+
+                <button
+                  onClick={() => setScreen('host_form')}
+                  className="w-full bg-slate-50 hover:bg-slate-100 active:scale-95 border-2 border-slate-100 hover:border-slate-200 py-5 px-6 rounded-2xl transition-all duration-200 text-left flex items-center justify-between"
+                >
+                  <div className="flex items-center space-x-4">
+                    <div className="w-12 h-12 rounded-xl bg-indigo-600 text-white flex items-center justify-center">
+                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                    </div>
+                    <div>
+                      <h4 className="font-extrabold text-slate-950 text-base">我是叫車的人</h4>
+                      <p className="text-xs text-slate-500 mt-0.5">我已經準備叫車/有車，想提供剩餘空位</p>
+                    </div>
+                  </div>
+                  <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7"/></svg>
+                </button>
+
+                <button
+                  onClick={() => { setFilterType('all'); setScreen('rides_list'); }}
+                  className="w-full bg-slate-950 hover:bg-slate-900 active:scale-95 py-5 px-6 rounded-2xl text-white transition-all duration-200 text-left flex items-center justify-between shadow-lg"
+                >
+                  <div className="flex items-center space-x-4">
+                    <div className="w-12 h-12 rounded-xl bg-white/10 text-white flex items-center justify-center">
+                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                    </div>
+                    <div>
+                      <h4 className="font-extrabold text-white text-base">查看目前需求</h4>
+                      <p className="text-xs text-slate-300 mt-0.5">瀏覽校友同學目前發起的即時共乘需求</p>
+                    </div>
+                  </div>
+                  <span className="flex items-center space-x-1">
+                    <span className="bg-rose-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold animate-pulse">{rides.filter(r => !r.isCancelled).length} 筆</span>
+                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7"/></svg>
+                  </span>
+                </button>
+              </div>
             </div>
 
-            <!-- 主選單：三個主要按鈕 (垂直巨型按鈕) -->
-            <div class="my-auto py-8 space-y-4">
+            {/* 下半部：我的拼車（即時快速進入聊天室/管理） */}
+            <div className="mt-8 pt-6 border-t border-slate-100">
+              <h3 className="text-sm font-bold text-slate-400 tracking-wider mb-3 uppercase">我的活躍行程 ({myRides.length})</h3>
+              {myRides.length === 0 ? (
+                <div className="text-center py-6 border-2 border-dashed border-slate-100 rounded-2xl">
+                  <p className="text-xs text-slate-400">目前沒有參與中的行程。快發起或加入吧！</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {myRides.slice(0, 3).map((ride) => {
+                    const isCreator = ride.creator.uid === user.uid;
+                    return (
+                      <div 
+                        key={ride.id}
+                        onClick={() => { setActiveRideId(ride.id); setScreen('chat'); }}
+                        className="p-3 bg-slate-50 hover:bg-slate-100 rounded-xl transition-all active:scale-98 cursor-pointer flex justify-between items-center border border-slate-100"
+                      >
+                        <div className="min-w-0 flex-1 pr-2">
+                          <div className="flex items-center space-x-1.5 mb-1">
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded font-extrabold uppercase ${
+                              ride.type === 'passenger' ? 'bg-amber-100 text-amber-800' : 'bg-indigo-100 text-indigo-800'
+                            }`}>
+                              {ride.type === 'passenger' ? '找拼車' : '有座位'}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-bold">{ride.time} 出發</span>
+                          </div>
+                          <p className="text-xs font-bold text-slate-800 truncate">
+                            {ride.start} → {ride.destination}
+                          </p>
+                        </div>
+                        <div className="flex items-center space-x-2 shrink-0">
+                          <span className="text-[11px] font-bold text-slate-500 bg-white px-2 py-1 rounded-lg border border-slate-200">
+                            已入: {ride.joinedUsers.length + 1}人
+                          </span>
+                          <span className="w-8 h-8 rounded-full bg-slate-900 text-white flex items-center justify-center text-xs">
+                            💬
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+          </div>
+        )}
+
+        {/* 3. 我要找拼車表單 (Passenger Form) */}
+        {screen === 'passenger_form' && (
+          <div className="flex-1 flex flex-col bg-white">
+            {/* Header */}
+            <div className="p-4 border-b border-slate-100 flex items-center space-x-2 shrink-0">
+              <button 
+                onClick={() => setScreen('home')}
+                className="p-2 hover:bg-slate-100 rounded-full active:scale-90 transition-all text-slate-700"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"/></svg>
+              </button>
+              <h2 className="text-lg font-black text-slate-950">我要找拼車 (乘客發布)</h2>
+            </div>
+
+            {/* 表單內容 */}
+            <form onSubmit={handlePassengerSubmit} className="flex-1 p-6 space-y-6 overflow-y-auto">
+              
+              {/* 出發地 */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  出發起點
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="請填寫出發地 (例如: 長庚大學深耕講堂)"
+                  value={passengerForm.start}
+                  onChange={(e) => setPassengerForm({ ...passengerForm, start: e.target.value })}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-950 focus:bg-white transition-all text-sm font-medium"
+                />
                 
-                <!-- 【我要找拼車】 -->
-                <button id="btn-to-find" class="w-full text-left p-6 bg-black text-white rounded-3xl shadow-xl shadow-black/10 btn-active-effect transition-all relative overflow-hidden flex flex-col justify-between h-40">
-                    <div class="flex justify-between items-start w-full">
-                        <div class="p-3 bg-white/10 rounded-2xl">
-                            <i data-lucide="navigation" class="w-6 h-6 text-white"></i>
-                        </div>
-                        <i data-lucide="arrow-up-right" class="w-5 h-5 text-white/60"></i>
-                    </div>
-                    <div>
-                        <h3 class="text-xl font-bold">我要找拼車</h3>
-                        <p class="text-white/70 text-xs mt-1">目前沒車，想找已經叫車的司機或車友</p>
-                    </div>
-                </button>
-
-                <!-- 【我是叫車的人】 -->
-                <button id="btn-to-offer" class="w-full text-left p-6 bg-white text-black rounded-3xl border-2 border-gray-900 shadow-sm btn-secondary-active transition-all relative overflow-hidden flex flex-col justify-between h-40">
-                    <div class="flex justify-between items-start w-full">
-                        <div class="p-3 bg-gray-50 rounded-2xl">
-                            <i data-lucide="car" class="w-6 h-6 text-black"></i>
-                        </div>
-                        <i data-lucide="arrow-up-right" class="w-5 h-5 text-black/40"></i>
-                    </div>
-                    <div>
-                        <h3 class="text-xl font-bold">我是叫車的人</h3>
-                        <p class="text-gray-500 text-xs mt-1">我已經叫好車/開車，還有空位能分攤車資</p>
-                    </div>
-                </button>
-
-                <!-- 【查看目前需求】 -->
-                <button id="btn-to-list" class="w-full text-left p-6 bg-gray-50 text-black rounded-3xl border border-gray-100 btn-secondary-active transition-all relative overflow-hidden flex flex-col justify-between h-40">
-                    <div class="flex justify-between items-start w-full">
-                        <div class="p-3 bg-white border border-gray-100 rounded-2xl">
-                            <i data-lucide="users" class="w-6 h-6 text-black"></i>
-                        </div>
-                        <span id="live-count-badge" class="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse">0 個即時需求</span>
-                    </div>
-                    <div>
-                        <h3 class="text-xl font-bold">查看目前需求</h3>
-                        <p class="text-gray-500 text-xs mt-1">瀏覽大廳現有的拼車房間與空缺席位</p>
-                    </div>
-                </button>
-
-            </div>
-
-            <!-- 頁尾提示 -->
-            <div class="text-center text-xs text-gray-400 py-2">
-                長庚學生互助社群 • 即時媒合無負擔
-            </div>
-        </section>
-
-        <!-- 3. 表單：我要找拼車 (Find Form) -->
-        <section id="page-find-form" class="flex-1 flex flex-col justify-between p-6 hidden">
-            <div>
-                <!-- 返回按鈕 -->
-                <div class="flex items-center gap-3 pt-4 mb-6">
-                    <button class="btn-back p-2 rounded-full border border-gray-100 btn-secondary-active" data-target="page-home">
-                        <i data-lucide="arrow-left" class="w-5 h-5 text-black"></i>
+                {/* 快捷點選 */}
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {POPULAR_LOCATIONS.map((loc) => (
+                    <button
+                      key={loc}
+                      type="button"
+                      onClick={() => setPassengerForm({ ...passengerForm, start: loc })}
+                      className="text-[10px] bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-95 transition-all px-2 py-1 rounded-full font-semibold"
+                    >
+                      {loc}
                     </button>
-                    <h2 class="text-xl font-bold text-black">我要找拼車</h2>
+                  ))}
                 </div>
+              </div>
 
-                <!-- 輸入欄位 -->
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">出發地</label>
-                        <input type="text" id="find-start" placeholder="例如：林口長庚醫院、校門口、捷運 A8 站" class="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-black focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">目的地</label>
-                        <input type="text" id="find-dest" placeholder="例如：台北車站、機捷 A7 站、桃園高鐵" class="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-black focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">預計出發時間</label>
-                        <input type="datetime-local" id="find-time" class="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-black focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">同行人數</label>
-                        <select id="find-seats" class="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-black focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all">
-                            <option value="1">1 人</option>
-                            <option value="2">2 人</option>
-                            <option value="3">3 人</option>
-                            <option value="4">4 人以上</option>
-                        </select>
-                    </div>
-                </div>
-            </div>
-
-            <div class="pt-8 pb-4">
-                <button id="btn-submit-find" class="w-full py-4 bg-black text-white font-bold rounded-2xl btn-active-effect transition-all flex items-center justify-center gap-2">
-                    <i data-lucide="send" class="w-5 h-5"></i>
-                    <span>送出需求</span>
-                </button>
-            </div>
-        </section>
-
-        <!-- 4. 表單：我是叫車的人 (Offer Form) -->
-        <section id="page-offer-form" class="flex-1 flex flex-col justify-between p-6 hidden">
-            <div>
-                <!-- 返回按鈕 -->
-                <div class="flex items-center gap-3 pt-4 mb-6">
-                    <button class="btn-back p-2 rounded-full border border-gray-100 btn-secondary-active" data-target="page-home">
-                        <i data-lucide="arrow-left" class="w-5 h-5 text-black"></i>
+              {/* 目的地 */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  目的地
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="請填寫目的地 (例如: A8 捷運站)"
+                  value={passengerForm.destination}
+                  onChange={(e) => setPassengerForm({ ...passengerForm, destination: e.target.value })}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-950 focus:bg-white transition-all text-sm font-medium"
+                />
+                
+                {/* 快捷點選 */}
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {POPULAR_LOCATIONS.map((loc) => (
+                    <button
+                      key={loc}
+                      type="button"
+                      onClick={() => setPassengerForm({ ...passengerForm, destination: loc })}
+                      className="text-[10px] bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-95 transition-all px-2 py-1 rounded-full font-semibold"
+                    >
+                      {loc}
                     </button>
-                    <h2 class="text-xl font-bold text-black">我是叫車的人</h2>
+                  ))}
                 </div>
+              </div>
 
-                <!-- 輸入欄位 -->
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">出發地</label>
-                        <input type="text" id="offer-start" placeholder="例如：醫學大樓、長庚科大女宿" class="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-black focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">目的地</label>
-                        <input type="text" id="offer-dest" placeholder="例如：板橋火車站、桃園市區" class="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-black focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">預計出發時間</label>
-                        <input type="datetime-local" id="offer-time" class="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-black focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">可提供剩餘座位數</label>
-                        <select id="offer-seats" class="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-black focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all">
-                            <option value="1">1 個座位</option>
-                            <option value="2">2 個座位</option>
-                            <option value="3">3 個座位</option>
-                            <option value="4">4 個座位</option>
-                        </select>
-                    </div>
-                </div>
+              {/* 出發時間 */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  預計出發時間
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="例如: 今天下午 14:30、現正出發"
+                  value={passengerForm.time}
+                  onChange={(e) => setPassengerForm({ ...passengerForm, time: e.target.value })}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-950 focus:bg-white transition-all text-sm font-medium"
+                />
+              </div>
+
+              {/* 拼客人數 */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  我需要再找幾位乘客夥伴？
+                </label>
+                <select
+                  value={passengerForm.seats}
+                  onChange={(e) => setPassengerForm({ ...passengerForm, seats: e.target.value })}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-950 focus:bg-white transition-all text-sm font-bold"
+                >
+                  <option value="1">1 位同學</option>
+                  <option value="2">2 位同學</option>
+                  <option value="3">3 位同學 (湊成計程車 4 人組)</option>
+                  <option value="4">4 位以上 (大團)</option>
+                </select>
+              </div>
+
+              {/* 送出 */}
+              <button
+                type="submit"
+                className="w-full bg-slate-900 hover:bg-slate-850 active:scale-98 text-white font-extrabold py-4 px-6 rounded-2xl tracking-wide transition-all duration-150 shadow-md flex items-center justify-center space-x-2 text-base"
+              >
+                <span>送出拼車需求</span>
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* 4. 我是叫車的人表單 (Host Form) */}
+        {screen === 'host_form' && (
+          <div className="flex-1 flex flex-col bg-white">
+            {/* Header */}
+            <div className="p-4 border-b border-slate-100 flex items-center space-x-2 shrink-0">
+              <button 
+                onClick={() => setScreen('home')}
+                className="p-2 hover:bg-slate-100 rounded-full active:scale-90 transition-all text-slate-700"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"/></svg>
+              </button>
+              <h2 className="text-lg font-black text-slate-950">我是叫車的人 (發布座位)</h2>
             </div>
 
-            <div class="pt-8 pb-4">
-                <button id="btn-submit-offer" class="w-full py-4 bg-black text-white font-bold rounded-2xl btn-active-effect transition-all flex items-center justify-center gap-2">
-                    <i data-lucide="check" class="w-5 h-5"></i>
-                    <span>發布座位</span>
+            {/* 表單內容 */}
+            <form onSubmit={handleHostSubmit} className="flex-1 p-6 space-y-6 overflow-y-auto">
+              
+              {/* 出發地 */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  叫車出發起點
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="請填寫出發地 (例如: 長庚科大守衛室)"
+                  value={hostForm.start}
+                  onChange={(e) => setHostForm({ ...hostForm, start: e.target.value })}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-950 focus:bg-white transition-all text-sm font-medium"
+                />
+                
+                {/* 快捷點選 */}
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {POPULAR_LOCATIONS.map((loc) => (
+                    <button
+                      key={loc}
+                      type="button"
+                      onClick={() => setHostForm({ ...hostForm, start: loc })}
+                      className="text-[10px] bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-95 transition-all px-2 py-1 rounded-full font-semibold"
+                    >
+                      {loc}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 目的地 */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  目的地
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="請填寫目的地 (例如: 桃園高鐵站)"
+                  value={hostForm.destination}
+                  onChange={(e) => setHostForm({ ...hostForm, destination: e.target.value })}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-950 focus:bg-white transition-all text-sm font-medium"
+                />
+                
+                {/* 快捷點選 */}
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {POPULAR_LOCATIONS.map((loc) => (
+                    <button
+                      key={loc}
+                      type="button"
+                      onClick={() => setHostForm({ ...hostForm, destination: loc })}
+                      className="text-[10px] bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-95 transition-all px-2 py-1 rounded-full font-semibold"
+                    >
+                      {loc}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 出發時間 */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  預計叫車出發時間
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="例如: 10 分鐘後、今晚 21:00"
+                  value={hostForm.time}
+                  onChange={(e) => setHostForm({ ...hostForm, time: e.target.value })}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-950 focus:bg-white transition-all text-sm font-medium"
+                />
+              </div>
+
+              {/* 剩餘可用座位 */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                  我可以提供多少個剩餘座位？
+                </label>
+                <select
+                  value={hostForm.seats}
+                  onChange={(e) => setHostForm({ ...hostForm, seats: e.target.value })}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-950 focus:bg-white transition-all text-sm font-bold"
+                >
+                  <option value="1">1 個空位</option>
+                  <option value="2">2 個空位</option>
+                  <option value="3">3 個空位 (基本款計程車湊人)</option>
+                  <option value="4">4 個以上空位</option>
+                </select>
+              </div>
+
+              {/* 送出 */}
+              <button
+                type="submit"
+                className="w-full bg-indigo-600 hover:bg-indigo-750 active:scale-98 text-white font-extrabold py-4 px-6 rounded-2xl tracking-wide transition-all duration-150 shadow-md flex items-center justify-center space-x-2 text-base"
+              >
+                <span>發布座位</span>
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* 5. 拼車需求卡片列表 (Rides List Screen) */}
+        {screen === 'rides_list' && (
+          <div className="flex-1 flex flex-col bg-slate-50">
+            {/* Header */}
+            <div className="bg-white p-4 border-b border-slate-100 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-2">
+                <button 
+                  onClick={() => setScreen('home')}
+                  className="p-2 hover:bg-slate-100 rounded-full active:scale-90 transition-all text-slate-700"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"/></svg>
                 </button>
+                <h2 className="text-lg font-black text-slate-950">目前的拼車行程</h2>
+              </div>
+              <span className="text-xs bg-slate-100 text-slate-600 font-bold px-2 py-1 rounded-full">
+                共 {activeRides.length} 筆
+              </span>
             </div>
-        </section>
 
-        <!-- 5. 拼車需求大廳列表 (List Page) -->
-        <section id="page-list" class="flex-1 flex flex-col justify-between p-6 hidden">
-            <div class="flex-1 flex flex-col">
-                <!-- 頂部標題與篩選 -->
-                <div class="pt-4 mb-4">
-                    <div class="flex items-center gap-3 mb-3">
-                        <button class="btn-back p-2 rounded-full border border-gray-100 btn-secondary-active" data-target="page-home">
-                            <i data-lucide="arrow-left" class="w-5 h-5 text-black"></i>
-                        </button>
-                        <h2 class="text-xl font-bold text-black">目前即時需求</h2>
-                    </div>
-
-                    <!-- 學校快捷篩選 -->
-                    <div class="flex gap-2">
-                        <button id="filter-all" class="flex-1 py-2 px-3 text-xs font-bold rounded-xl border-2 border-black bg-black text-white transition-all">全部</button>
-                        <button id="filter-cgu" class="flex-1 py-2 px-3 text-xs font-bold rounded-xl border border-gray-200 bg-white text-gray-600 transition-all">長庚大學</button>
-                        <button id="filter-cgust" class="flex-1 py-2 px-3 text-xs font-bold rounded-xl border border-gray-200 bg-white text-gray-600 transition-all">長庚科大</button>
-                    </div>
-                </div>
-
-                <!-- 滾動卡片列表區 -->
-                <div id="cards-container" class="flex-1 overflow-y-auto space-y-4 max-h-[60vh] pr-1 pb-4 no-scrollbar">
-                    <!-- 卡片動態渲染位置 -->
-                </div>
+            {/* 過濾 Tab 標籤 */}
+            <div className="bg-white px-4 pb-3 flex space-x-2 shrink-0 border-b border-slate-100">
+              <button
+                onClick={() => setFilterType('all')}
+                className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${
+                  filterType === 'all' 
+                    ? 'bg-slate-900 text-white shadow-sm' 
+                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                }`}
+              >
+                全部
+              </button>
+              <button
+                onClick={() => setFilterType('passenger')}
+                className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${
+                  filterType === 'passenger' 
+                    ? 'bg-amber-500 text-white shadow-sm' 
+                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                }`}
+              >
+                找車乘客
+              </button>
+              <button
+                onClick={() => setFilterType('host')}
+                className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${
+                  filterType === 'host' 
+                    ? 'bg-indigo-600 text-white shadow-sm' 
+                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                }`}
+              >
+                叫車主揪
+              </button>
             </div>
-        </section>
 
-        <!-- 6. 即時拼車聊天與詳情頁面 (Detail & Chat Page) -->
-        <section id="page-detail" class="flex-1 flex flex-col justify-between hidden h-screen max-h-screen">
-            <!-- 頂部導航與房間簡介 -->
-            <div class="p-4 border-b border-gray-100 bg-white shrink-0">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-3">
-                        <button class="btn-back p-2 rounded-full border border-gray-100 btn-secondary-active" data-target="page-list">
-                            <i data-lucide="arrow-left" class="w-5 h-5 text-black"></i>
-                        </button>
+            {/* 拼車卡片滾動區 */}
+            <div className="flex-1 p-4 space-y-4 overflow-y-auto">
+              {activeRides.length === 0 ? (
+                <div className="flex flex-col justify-center items-center py-16 px-4 text-center bg-white rounded-3xl border border-slate-100">
+                  <span className="text-4xl mb-3">🚖</span>
+                  <h3 className="font-bold text-slate-700">目前沒有對應的拼車需求</h3>
+                  <p className="text-xs text-slate-400 mt-1 max-w-[240px]">
+                    您要不要回到首頁，親自發起一筆拼車讓大家加入呢？
+                  </p>
+                  <button
+                    onClick={() => setScreen('home')}
+                    className="mt-4 px-5 py-2.5 bg-slate-900 text-white text-xs font-extrabold rounded-full active:scale-95 transition-all"
+                  >
+                    返回首頁發起
+                  </button>
+                </div>
+              ) : (
+                activeRides.map((ride) => {
+                  const isCreator = ride.creator?.uid === user.uid;
+                  const isJoined = ride.joinedUsers?.some(u => u.uid === user.uid);
+                  const currentCount = ride.joinedUsers?.length || 0;
+                  const maxSeats = ride.seats || 3;
+                  const remainingSeats = maxSeats - currentCount;
+
+                  return (
+                    <div 
+                      key={ride.id} 
+                      className={`bg-white border transition-all rounded-3xl p-5 shadow-sm relative overflow-hidden ${
+                        isCreator || isJoined ? 'border-slate-900 ring-1 ring-slate-900' : 'border-slate-100'
+                      }`}
+                    >
+                      {/* 頂部標章 */}
+                      <div className="flex justify-between items-start mb-3">
+                        <span className={`text-[10px] px-2.5 py-1 rounded-full font-extrabold uppercase ${
+                          ride.type === 'passenger' 
+                            ? 'bg-amber-100 text-amber-800' 
+                            : 'bg-indigo-100 text-indigo-800'
+                        }`}>
+                          {ride.type === 'passenger' ? '乘客找拼車 🙋' : '叫車主揪找人 🚗'}
+                        </span>
+                        
+                        <span className="text-[11px] text-slate-400 font-extrabold flex items-center">
+                          <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                          {ride.time}
+                        </span>
+                      </div>
+
+                      {/* 起迄點線段圖 (Uber風格) */}
+                      <div className="space-y-2.5 my-4">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-2.5 h-2.5 bg-slate-900 rounded-full flex-shrink-0"></div>
+                          <div className="min-w-0 flex-1">
+                            <span className="text-xs text-slate-400 block font-bold leading-none mb-0.5">出發地</span>
+                            <span className="font-extrabold text-sm text-slate-900 truncate block">{ride.start}</span>
+                          </div>
+                        </div>
+                        <div className="w-0.5 h-4 bg-slate-200 ml-[4.5px] -my-1"></div>
+                        <div className="flex items-center space-x-3">
+                          <div className="w-2.5 h-2.5 bg-indigo-600 rounded-sm flex-shrink-0"></div>
+                          <div className="min-w-0 flex-1">
+                            <span className="text-xs text-slate-400 block font-bold leading-none mb-0.5">目的地</span>
+                            <span className="font-extrabold text-sm text-slate-900 truncate block">{ride.destination}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 發起人與空位狀態 */}
+                      <div className="flex justify-between items-center pt-3 border-t border-slate-100 text-xs">
                         <div>
-                            <h3 class="text-base font-bold text-black leading-none">
-                                <span id="chat-start-dest">出發地 ➔ 目的地</span>
-                            </h3>
-                            <span id="chat-room-badge" class="inline-block mt-1 text-[10px] bg-black text-white px-2 py-0.5 rounded font-semibold">房間</span>
+                          <p className="text-slate-400 font-bold">發起人</p>
+                          <p className="font-extrabold text-slate-800 mt-0.5">
+                            {ride.creator?.nickname} <span className="text-[10px] text-indigo-600 font-medium">({ride.creator?.school})</span>
+                          </p>
                         </div>
-                    </div>
-                    <!-- 退出拼車按鈕 -->
-                    <button id="btn-leave-group" class="text-xs text-red-500 font-bold px-3 py-1.5 rounded-xl border border-red-100 btn-secondary-active flex items-center gap-1">
-                        <i data-lucide="user-minus" class="w-3.5 h-3.5"></i>
-                        <span>退出</span>
-                    </button>
-                </div>
-
-                <!-- 行程迷你資訊欄 -->
-                <div class="mt-3 grid grid-cols-2 gap-2 bg-gray-50 p-3 rounded-2xl text-xs text-gray-600">
-                    <div>
-                        <span class="text-gray-400 block text-[9px] uppercase font-bold">預計出發時間</span>
-                        <span id="chat-info-time" class="font-semibold text-black">載入中...</span>
-                    </div>
-                    <div>
-                        <span class="text-gray-400 block text-[9px] uppercase font-bold">空缺 / 可供人數</span>
-                        <span id="chat-info-seats" class="font-semibold text-black">載入中...</span>
-                    </div>
-                </div>
-
-                <!-- 目前成員名單 -->
-                <div class="mt-3">
-                    <span class="text-gray-400 block text-[9px] uppercase font-bold mb-1">同車夥伴 (點選電話可直接撥打)</span>
-                    <div id="chat-member-list" class="flex flex-wrap gap-1.5">
-                        <!-- 動態渲染成員標籤 -->
-                    </div>
-                </div>
-            </div>
-
-            <!-- 聊天訊息歷史記錄區 -->
-            <div id="chat-messages" class="flex-1 overflow-y-auto p-4 bg-gray-50 space-y-3 no-scrollbar">
-                <!-- 動態訊息 -->
-            </div>
-
-            <!-- 底部訊息輸入欄 -->
-            <div class="p-4 border-t border-gray-100 bg-white shrink-0">
-                <form id="chat-form" class="flex gap-2">
-                    <input type="text" id="chat-input" placeholder="和同車的朋友打聲招呼吧..." class="flex-1 px-4 py-3 bg-gray-50 border border-gray-200 rounded-2xl text-sm text-black focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all">
-                    <button type="submit" class="p-3 bg-black text-white rounded-2xl btn-active-effect transition-all">
-                        <i data-lucide="send" class="w-5 h-5"></i>
-                    </button>
-                </form>
-            </div>
-        </section>
-
-        <!-- 自訂通知提示視窗 (Toast Alert) -->
-        <div id="toast-notification" class="absolute top-4 left-4 right-4 bg-black text-white p-4 rounded-2xl shadow-xl transform -translate-y-32 transition-all duration-300 z-50 flex items-center gap-3">
-            <div class="p-2 bg-white/20 rounded-xl" id="toast-icon-container">
-                <i data-lucide="info" class="w-5 h-5 text-white"></i>
-            </div>
-            <div class="flex-1">
-                <p id="toast-message" class="text-sm font-semibold">這是提示訊息</p>
-            </div>
-        </div>
-
-    </div>
-
-    <!-- 主要邏輯 Script (Firebase 整合與 RWD 控制) -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, addDoc, query, onSnapshot, arrayUnion, arrayRemove, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // 1. 初始化與環境變數定義
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'cgu-gogether-2026';
-        const firebaseConfig = JSON.parse(__firebase_config);
-        
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-
-        // 使用者本地狀態
-        let currentUser = null;
-        let userData = null;
-        let activeRoomId = null;
-        let activeRoomUnsubscribe = null;
-        let chatMessagesUnsubscribe = null;
-        let globalRoomsUnsubscribe = null;
-        
-        let selectedSchool = ''; // 'CGU' 或 'CGUST'
-        let currentFilter = 'all'; // 'all', 'cgu', 'cgust'
-        let allRooms = []; // 本地存放的所有拼車需求
-
-        // 2. UI 元素選取
-        const screens = {
-            login: document.getElementById('page-login'),
-            home: document.getElementById('page-home'),
-            findForm: document.getElementById('page-find-form'),
-            offerForm: document.getElementById('page-offer-form'),
-            list: document.getElementById('page-list'),
-            detail: document.getElementById('page-detail')
-        };
-
-        const globalLoader = document.getElementById('global-loader');
-        const toast = document.getElementById('toast-notification');
-        const toastMessage = document.getElementById('toast-message');
-
-        // 顯示載入動畫
-        function showLoading(show) {
-            if (show) {
-                globalLoader.classList.remove('opacity-0', 'pointer-events-none');
-            } else {
-                globalLoader.classList.add('opacity-0', 'pointer-events-none');
-            }
-        }
-
-        // 自訂精美 Toast 提示
-        function showToast(message, type = 'info') {
-            toastMessage.textContent = message;
-            
-            // 根據類型變換樣式
-            const container = document.getElementById('toast-icon-container');
-            if (type === 'error') {
-                container.className = "p-2 bg-red-500/20 rounded-xl";
-                container.innerHTML = `<i data-lucide="alert-triangle" class="w-5 h-5 text-red-500"></i>`;
-            } else if (type === 'success') {
-                container.className = "p-2 bg-green-500/20 rounded-xl";
-                container.innerHTML = `<i data-lucide="check" class="w-5 h-5 text-green-400"></i>`;
-            } else {
-                container.className = "p-2 bg-white/20 rounded-xl";
-                container.innerHTML = `<i data-lucide="info" class="w-5 h-5 text-white"></i>`;
-            }
-            lucide.createIcons();
-
-            // 顯現
-            toast.classList.remove('-translate-y-32');
-            toast.classList.add('translate-y-0');
-
-            setTimeout(() => {
-                toast.classList.remove('translate-y-0');
-                toast.classList.add('-translate-y-32');
-            }, 3000);
-        }
-
-        // 3. 頁面路由管理 (無 Router 單頁面切換)
-        function navigateTo(targetScreenId) {
-            // 隱藏所有頁面
-            Object.values(screens).forEach(screen => screen.classList.add('hidden'));
-            
-            // 顯示目標頁面
-            screens[targetScreenId].classList.remove('hidden');
-
-            // 路由特定初始化動作
-            if (targetScreenId === 'home') {
-                renderHomeHeader();
-            }
-            if (targetScreenId === 'list') {
-                startGlobalRoomsListener();
-            } else {
-                // 如果離開列表，暫停全域監聽（優化性能）
-                stopGlobalRoomsListener();
-            }
-
-            // 如果離開聊天室，關閉相應監聽
-            if (targetScreenId !== 'detail') {
-                stopActiveRoomListener();
-            }
-
-            // 重新初始化 Lucide 圖標
-            lucide.createIcons();
-            window.scrollTo(0, 0);
-        }
-
-        // 綁定所有返回按鈕
-        document.querySelectorAll('.btn-back').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const target = btn.getAttribute('data-target');
-                navigateTo(target);
-            });
-        });
-
-        // 4. 會員與認證系統 (依據規範： Auth Before Queries)
-        const initAuth = async () => {
-            try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("驗證初始化失敗：", error);
-                showToast("連接安全伺服器失敗，正在重試...", "error");
-                // 指數退避重試
-                setTimeout(initAuth, 2000);
-            }
-        };
-
-        // 啟動身分確認
-        initAuth();
-
-        // 監聽登入狀態
-        onAuthStateChanged(auth, async (user) => {
-            currentUser = user;
-            if (user) {
-                // 確認資料庫中是否有該使用者的進階檔案 (暱稱、電話、學校)
-                const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'info');
-                try {
-                    const docSnap = await getDoc(userDocRef);
-                    if (docSnap.exists()) {
-                        userData = docSnap.data();
-                        navigateTo('home');
-                    } else {
-                        // 尚未建立檔案，引導至登陸填寫頁面
-                        navigateTo('login');
-                    }
-                } catch (e) {
-                    console.error("獲取使用者檔案失敗：", e);
-                    navigateTo('login');
-                }
-            } else {
-                // 未登入狀態
-                navigateTo('login');
-            }
-            showLoading(false);
-        });
-
-        // 登入操作
-        const btnSelectCGU = document.getElementById('btn-select-cgu');
-        const btnSelectCGUST = document.getElementById('btn-select-cgust');
-        const inputNickname = document.getElementById('input-nickname');
-        const inputPhone = document.getElementById('input-phone');
-        const btnLoginSubmit = document.getElementById('btn-login-submit');
-
-        btnSelectCGU.addEventListener('click', () => {
-            selectedSchool = 'CGU';
-            btnSelectCGU.className = "py-4 px-4 rounded-2xl border-2 border-black text-center font-bold text-black bg-black/5 transition-all duration-200 flex flex-col items-center justify-center gap-1";
-            btnSelectCGUST.className = "py-4 px-4 rounded-2xl border-2 border-gray-100 text-center font-bold text-gray-600 transition-all duration-200 flex flex-col items-center justify-center gap-1";
-        });
-
-        btnSelectCGUST.addEventListener('click', () => {
-            selectedSchool = 'CGUST';
-            btnSelectCGUST.className = "py-4 px-4 rounded-2xl border-2 border-black text-center font-bold text-black bg-black/5 transition-all duration-200 flex flex-col items-center justify-center gap-1";
-            btnSelectCGU.className = "py-4 px-4 rounded-2xl border-2 border-gray-100 text-center font-bold text-gray-600 transition-all duration-200 flex flex-col items-center justify-center gap-1";
-        });
-
-        btnLoginSubmit.addEventListener('click', async () => {
-            if (!selectedSchool) {
-                showToast("請選擇您的學校！", "error");
-                return;
-            }
-            const nick = inputNickname.value.trim();
-            const phone = inputPhone.value.trim();
-
-            if (!nick) {
-                showToast("請輸入您的個人暱稱！", "error");
-                return;
-            }
-            if (!phone || !/^09\d{8}$/.test(phone)) {
-                showToast("請輸入正確的手機號碼 (10碼數字)！", "error");
-                return;
-            }
-
-            showLoading(true);
-            try {
-                if (!currentUser) {
-                    await signInAnonymously(auth);
-                }
-
-                // 儲存至私有路徑：/artifacts/{appId}/users/{userId}/profile/info (RULE 1 規範)
-                const userDocRef = doc(db, 'artifacts', appId, 'users', auth.currentUser.uid, 'profile', 'info');
-                const pData = {
-                    uid: auth.currentUser.uid,
-                    nickname: nick,
-                    phone: phone,
-                    school: selectedSchool,
-                    createdAt: new Date().toISOString()
-                };
-                await setDoc(userDocRef, pData);
-                userData = pData;
-
-                showToast("資料建檔成功，歡迎體驗拼一下！", "success");
-                navigateTo('home');
-            } catch (e) {
-                console.error("登錄檔案儲存失敗：", e);
-                showToast("儲存失敗，請重試", "error");
-            } finally {
-                showLoading(false);
-            }
-        });
-
-        // 登出功能
-        document.getElementById('btn-logout').addEventListener('click', async () => {
-            if (confirm('確定要登出並切換使用者嗎？')) {
-                showLoading(true);
-                try {
-                    await signOut(auth);
-                    userData = null;
-                    selectedSchool = '';
-                    inputNickname.value = '';
-                    inputPhone.value = '';
-                    btnSelectCGU.className = "py-4 px-4 rounded-2xl border-2 border-gray-100 text-center font-bold text-gray-600 transition-all duration-200 flex flex-col items-center justify-center gap-1";
-                    btnSelectCGUST.className = "py-4 px-4 rounded-2xl border-2 border-gray-100 text-center font-bold text-gray-600 transition-all duration-200 flex flex-col items-center justify-center gap-1";
-                    showToast("已成功登出", "success");
-                } catch (e) {
-                    showToast("登出失敗", "error");
-                } finally {
-                    showLoading(false);
-                }
-            }
-        });
-
-        // 渲染首頁個人資訊
-        function renderHomeHeader() {
-            if (userData) {
-                document.getElementById('user-display-name').textContent = userData.nickname;
-                const tag = document.getElementById('user-school-tag');
-                tag.textContent = userData.school === 'CGU' ? '長庚大學' : '長庚科大';
-                if (userData.school === 'CGU') {
-                    tag.className = "bg-blue-50 text-blue-700 text-[11px] font-bold px-2.5 py-1 rounded-full tracking-wider";
-                } else {
-                    tag.className = "bg-purple-50 text-purple-700 text-[11px] font-bold px-2.5 py-1 rounded-full tracking-wider";
-                }
-            }
-        }
-
-        // 首頁三大按鈕導向
-        document.getElementById('btn-to-find').addEventListener('click', () => navigateTo('findForm'));
-        document.getElementById('btn-to-offer').addEventListener('click', () => navigateTo('offerForm'));
-        document.getElementById('btn-to-list').addEventListener('click', () => navigateTo('list'));
-
-
-        // 5. 拼車需求資料庫提交邏輯
-        // 公共資料庫集合路徑: /artifacts/{appId}/public/data/rooms (RULE 1 規範)
-        
-        // A. 送出【我要找拼車】需求
-        document.getElementById('btn-submit-find').addEventListener('click', async () => {
-            const start = document.getElementById('find-start').value.trim();
-            const dest = document.getElementById('find-dest').value.trim();
-            const time = document.getElementById('find-time').value;
-            const seats = parseInt(document.getElementById('find-seats').value);
-
-            if (!start || !dest || !time) {
-                showToast("請完整填寫出發地、目的地及出發時間！", "error");
-                return;
-            }
-
-            showLoading(true);
-            try {
-                const roomCol = collection(db, 'artifacts', appId, 'public', 'data', 'rooms');
-                await addDoc(roomCol, {
-                    type: 'find', // 尋找同行
-                    start: start,
-                    dest: dest,
-                    time: time,
-                    targetSeats: seats, // 共需攜帶幾人
-                    creatorUid: currentUser.uid,
-                    creatorName: userData.nickname,
-                    creatorPhone: userData.phone,
-                    school: userData.school,
-                    members: [{
-                        uid: currentUser.uid,
-                        nickname: userData.nickname,
-                        phone: userData.phone,
-                        school: userData.school
-                    }],
-                    createdAt: new Date().toISOString()
-                });
-
-                showToast("成功發布找車需求！", "success");
-                // 清空
-                document.getElementById('find-start').value = '';
-                document.getElementById('find-dest').value = '';
-                document.getElementById('find-time').value = '';
-                navigateTo('list');
-            } catch (e) {
-                console.error("發布找車需求失敗：", e);
-                showToast("發布失敗，請確認網路連線", "error");
-            } finally {
-                showLoading(false);
-            }
-        });
-
-        // B. 發布【我是叫車的人】座位
-        document.getElementById('btn-submit-offer').addEventListener('click', async () => {
-            const start = document.getElementById('offer-start').value.trim();
-            const dest = document.getElementById('offer-dest').value.trim();
-            const time = document.getElementById('offer-time').value;
-            const seats = parseInt(document.getElementById('offer-seats').value);
-
-            if (!start || !dest || !time) {
-                showToast("請完整填寫出發地、目的地及出發時間！", "error");
-                return;
-            }
-
-            showLoading(true);
-            try {
-                const roomCol = collection(db, 'artifacts', appId, 'public', 'data', 'rooms');
-                await addDoc(roomCol, {
-                    type: 'offer', // 提供空位
-                    start: start,
-                    dest: dest,
-                    time: time,
-                    availableSeats: seats, // 可容納空位
-                    creatorUid: currentUser.uid,
-                    creatorName: userData.nickname,
-                    creatorPhone: userData.phone,
-                    school: userData.school,
-                    members: [{
-                        uid: currentUser.uid,
-                        nickname: userData.nickname,
-                        phone: userData.phone,
-                        school: userData.school
-                    }],
-                    createdAt: new Date().toISOString()
-                });
-
-                showToast("成功發布座位資訊！", "success");
-                // 清空
-                document.getElementById('offer-start').value = '';
-                document.getElementById('offer-dest').value = '';
-                document.getElementById('offer-time').value = '';
-                navigateTo('list');
-            } catch (e) {
-                console.error("發布提供座位失敗：", e);
-                showToast("發布失敗，請重試", "error");
-            } finally {
-                showLoading(false);
-            }
-        });
-
-
-        // 6. 全域即時資料接收與渲染 (RULE 2 規範： 不做複雜 query 篩選，在記憶體中處理)
-        function startGlobalRoomsListener() {
-            if (!currentUser) return;
-            showLoading(true);
-
-            // 公共集合查詢
-            const roomsRef = collection(db, 'artifacts', appId, 'public', 'data', 'rooms');
-            
-            globalRoomsUnsubscribe = onSnapshot(roomsRef, (snapshot) => {
-                allRooms = [];
-                snapshot.forEach(doc => {
-                    allRooms.push({ id: doc.id, ...doc.data() });
-                });
-
-                // 依創建時間遞減排序 (新開的放前面)
-                allRooms.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-                // 更新首頁計數徽章
-                const badge = document.getElementById('live-count-badge');
-                if (badge) {
-                    badge.textContent = `${allRooms.length} 個即時需求`;
-                }
-
-                renderRoomsList();
-                showLoading(false);
-            }, (error) => {
-                console.error("載入房間時發生錯誤：", error);
-                showToast("即時載入失敗，請重新整理頁面", "error");
-                showLoading(false);
-            });
-        }
-
-        function stopGlobalRoomsListener() {
-            if (globalRoomsUnsubscribe) {
-                globalRoomsUnsubscribe();
-                globalRoomsUnsubscribe = null;
-            }
-        }
-
-        // 渲染大廳卡片
-        function renderRoomsList() {
-            const container = document.getElementById('cards-container');
-            container.innerHTML = '';
-
-            // 依篩選條件過濾
-            let filtered = allRooms;
-            if (currentFilter !== 'all') {
-                filtered = allRooms.filter(room => room.school.toLowerCase() === currentFilter.toLowerCase());
-            }
-
-            if (filtered.length === 0) {
-                container.innerHTML = `
-                    <div class="flex flex-col items-center justify-center py-16 text-center px-4">
-                        <div class="p-4 bg-gray-50 rounded-full mb-3">
-                            <i data-lucide="compass" class="w-8 h-8 text-gray-300"></i>
-                        </div>
-                        <h4 class="text-sm font-bold text-gray-500">目前沒有相關拼車需求</h4>
-                        <p class="text-xs text-gray-400 mt-1">主動去首頁點擊發起一個需求吧！</p>
-                    </div>
-                `;
-                lucide.createIcons();
-                return;
-            }
-
-            filtered.forEach(room => {
-                const card = document.createElement('div');
-                card.className = "bg-white rounded-3xl border border-gray-100 p-5 shadow-sm hover:shadow-md transition-all duration-200 flex flex-col justify-between";
-
-                // 卡片頂部資訊
-                const isFind = room.type === 'find';
-                const labelColor = isFind ? 'bg-black text-white' : 'bg-gray-100 text-black border border-gray-200';
-                const labelText = isFind ? '找拼車中' : '已有車/徵車友';
-                
-                const schoolBadge = room.school === 'CGU' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700';
-                const schoolName = room.school === 'CGU' ? '長庚大學' : '長庚科大';
-
-                // 計算缺額席位
-                let seatInfo = '';
-                if (isFind) {
-                    seatInfo = `缺客 ${room.targetSeats} 人`;
-                } else {
-                    const occupied = room.members ? room.members.length - 1 : 0; // 扣除發起人
-                    const left = room.availableSeats - occupied;
-                    seatInfo = left > 0 ? `剩 ${left} 個空位` : `已額滿`;
-                }
-
-                // 檢查目前使用者是否已經在該房間內
-                const isMember = room.members && room.members.some(m => m.uid === currentUser.uid);
-
-                // 格式化出發時間呈現
-                let displayTime = '';
-                try {
-                    const d = new Date(room.time);
-                    displayTime = `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-                } catch(e) {
-                    displayTime = room.time;
-                }
-
-                card.innerHTML = `
-                    <div class="flex justify-between items-start mb-3">
-                        <div class="flex gap-1.5 items-center">
-                            <span class="text-[10px] font-bold px-2 py-0.5 rounded-md ${labelColor}">${labelText}</span>
-                            <span class="text-[10px] font-bold px-2 py-0.5 rounded-md ${schoolBadge}">${schoolName}</span>
-                        </div>
-                        <span class="text-xs font-bold text-gray-600">${seatInfo}</span>
-                    </div>
-
-                    <div class="space-y-2 mb-4">
-                        <div class="flex items-start gap-2.5">
-                            <span class="text-[9px] font-bold tracking-tight bg-green-100 text-green-700 px-1.5 py-0.5 rounded mt-0.5 shrink-0">起</span>
-                            <span class="text-sm font-bold text-black line-clamp-1">${room.start}</span>
-                        </div>
-                        <div class="flex items-start gap-2.5">
-                            <span class="text-[9px] font-bold tracking-tight bg-red-100 text-red-700 px-1.5 py-0.5 rounded mt-0.5 shrink-0">迄</span>
-                            <span class="text-sm font-bold text-black line-clamp-1">${room.dest}</span>
-                        </div>
-                    </div>
-
-                    <div class="border-t border-gray-50 pt-3 flex justify-between items-center text-xs">
-                        <div class="flex flex-col">
-                            <span class="text-[9px] text-gray-400 uppercase font-semibold">預計出發</span>
-                            <span class="font-bold text-gray-700">${displayTime}</span>
-                        </div>
-                        <div class="flex flex-col text-right">
-                            <span class="text-[9px] text-gray-400 uppercase font-semibold">發起人</span>
-                            <span class="font-bold text-gray-700">${room.creatorName}</span>
-                        </div>
-                    </div>
-
-                    <div class="mt-4 flex gap-2">
-                        ${isMember ? `
-                            <button class="flex-1 py-3 bg-green-500 text-white font-bold rounded-2xl text-xs flex items-center justify-center gap-1.5 btn-active-effect transition-all btn-enter-chat" data-id="${room.id}">
-                                <i data-lucide="message-square" class="w-4 h-4"></i>
-                                <span>進入聊天與詳情</span>
-                            </button>
-                        ` : `
-                            <button class="flex-1 py-3 bg-black text-white font-bold rounded-2xl text-xs flex items-center justify-center gap-1.5 btn-active-effect transition-all btn-join-room" data-id="${room.id}">
-                                <i data-lucide="user-plus" class="w-4 h-4"></i>
-                                <span>我要加入</span>
-                            </button>
-                        `}
-                    </div>
-                `;
-
-                container.appendChild(card);
-            });
-
-            // 綁定大廳「我要加入」與「進入聊天室」點擊動作
-            container.querySelectorAll('.btn-join-room').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    const id = btn.getAttribute('data-id');
-                    joinRoom(id);
-                });
-            });
-
-            container.querySelectorAll('.btn-enter-chat').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    const id = btn.getAttribute('data-id');
-                    openRoomDetail(id);
-                });
-            });
-
-            lucide.createIcons();
-        }
-
-        // 快捷學校篩選按鈕反應
-        const fAll = document.getElementById('filter-all');
-        const fCgu = document.getElementById('filter-cgu');
-        const fCgust = document.getElementById('filter-cgust');
-
-        function updateFilterStyles() {
-            fAll.className = currentFilter === 'all' ? "flex-1 py-2 px-3 text-xs font-bold rounded-xl border-2 border-black bg-black text-white transition-all" : "flex-1 py-2 px-3 text-xs font-bold rounded-xl border border-gray-200 bg-white text-gray-600 transition-all";
-            fCgu.className = currentFilter === 'cgu' ? "flex-1 py-2 px-3 text-xs font-bold rounded-xl border-2 border-black bg-black text-white transition-all" : "flex-1 py-2 px-3 text-xs font-bold rounded-xl border border-gray-200 bg-white text-gray-600 transition-all";
-            fCgust.className = currentFilter === 'cgust' ? "flex-1 py-2 px-3 text-xs font-bold rounded-xl border-2 border-black bg-black text-white transition-all" : "flex-1 py-2 px-3 text-xs font-bold rounded-xl border border-gray-200 bg-white text-gray-600 transition-all";
-        }
-
-        fAll.addEventListener('click', () => { currentFilter = 'all'; updateFilterStyles(); renderRoomsList(); });
-        fCgu.addEventListener('click', () => { currentFilter = 'cgu'; updateFilterStyles(); renderRoomsList(); });
-        fCgust.addEventListener('click', () => { currentFilter = 'cgust'; updateFilterStyles(); renderRoomsList(); });
-
-
-        // 7. 加入拼車與群組管理機制
-        async function joinRoom(roomId) {
-            showLoading(true);
-            try {
-                const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-                const roomSnap = await getDoc(roomDocRef);
-
-                if (!roomSnap.exists()) {
-                    showToast("此拼車局已被發起人刪除！", "error");
-                    return;
-                }
-
-                const room = roomSnap.data();
-
-                // 確認防呆：不能重複加入
-                if (room.members && room.members.some(m => m.uid === currentUser.uid)) {
-                    showToast("你已經加入過此拼車隊伍囉！", "success");
-                    openRoomDetail(roomId);
-                    return;
-                }
-
-                // 人數/空位上限驗證
-                if (room.type === 'offer') {
-                    const occupied = room.members ? room.members.length - 1 : 0; // 發起人不扣除空位
-                    if (occupied >= room.availableSeats) {
-                        showToast("此叫車席位已額滿，請尋找其他車友！", "error");
-                        return;
-                    }
-                }
-
-                // 執行安全寫入
-                const newMember = {
-                    uid: currentUser.uid,
-                    nickname: userData.nickname,
-                    phone: userData.phone,
-                    school: userData.school
-                };
-
-                await updateDoc(roomDocRef, {
-                    members: arrayUnion(newMember)
-                });
-
-                // 發送加入之系統聊天通知
-                const chatCol = collection(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'messages');
-                await addDoc(chatCol, {
-                    senderUid: 'system',
-                    senderName: '系統',
-                    content: `🎉 歡迎 ${userData.nickname} (${userData.school === 'CGU'?'長庚大學':'長庚科大'}) 加入了拼車車隊！`,
-                    createdAt: new Date().toISOString()
-                });
-
-                showToast("成功加入拼車局！", "success");
-                openRoomDetail(roomId);
-
-            } catch (e) {
-                console.error("加入拼車失敗：", e);
-                showToast("加入失敗，請重試", "error");
-            } finally {
-                showLoading(false);
-            }
-        }
-
-
-        // 8. 專屬即時聊天室與資訊群聊
-        function openRoomDetail(roomId) {
-            activeRoomId = roomId;
-            navigateTo('detail');
-            showLoading(true);
-
-            // 停止舊有的房間特定監聽器
-            stopActiveRoomListener();
-
-            const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-            const chatColRef = collection(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'messages');
-
-            // A. 監聽房間基礎資料 (以確保能同步成員名單)
-            activeRoomUnsubscribe = onSnapshot(roomDocRef, (snap) => {
-                if (!snap.exists()) {
-                    showToast("該房間已被發起人取消！", "error");
-                    navigateTo('list');
-                    return;
-                }
-
-                const room = snap.data();
-                
-                // 渲染頂部狀態
-                document.getElementById('chat-start-dest').textContent = `${room.start} ➔ ${room.dest}`;
-                document.getElementById('chat-room-badge').textContent = room.type === 'find' ? '找拼車中' : '提供座位';
-                
-                // 渲染時間與空位
-                let displayTime = '';
-                try {
-                    const d = new Date(room.time);
-                    displayTime = `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-                } catch(e) {
-                    displayTime = room.time;
-                }
-                document.getElementById('chat-info-time').textContent = displayTime;
-
-                if (room.type === 'find') {
-                    document.getElementById('chat-info-seats').textContent = `缺席位 ${room.targetSeats} 人`;
-                } else {
-                    const occupied = room.members ? room.members.length - 1 : 0;
-                    document.getElementById('chat-info-seats').textContent = `剩餘可搭：${room.availableSeats - occupied} / ${room.availableSeats}`;
-                }
-
-                // 渲染當前所有車友的名單與可撥打電話
-                const memberContainer = document.getElementById('chat-member-list');
-                memberContainer.innerHTML = '';
-                
-                if (room.members) {
-                    room.members.forEach(m => {
-                        const isSelf = m.uid === currentUser.uid;
-                        const phoneHref = isSelf ? '#' : `tel:${m.phone}`;
-                        const memberTag = document.createElement('a');
-                        memberTag.href = phoneHref;
-                        memberTag.className = `inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full font-medium transition-all ${
-                            isSelf ? 'bg-black text-white' : 'bg-gray-100 hover:bg-gray-200 text-black border border-gray-200'
-                        }`;
-                        memberTag.innerHTML = `
-                            <span>${m.nickname} (${m.school === 'CGU' ? '長庚大' : '科大'})</span>
-                            ${isSelf ? '' : `<i data-lucide="phone" class="w-2.5 h-2.5 text-gray-500"></i>`}
-                        `;
-                        memberContainer.appendChild(memberTag);
-                    });
-                }
-                lucide.createIcons();
-                showLoading(false);
-            }, (err) => {
-                showToast("載入詳情失敗", "error");
-                showLoading(false);
-            });
-
-            // B. 監聽房間即時聊天訊息列表 (RULE 2: 載入全部並在本地排序)
-            chatMessagesUnsubscribe = onSnapshot(chatColRef, (snap) => {
-                const msgs = [];
-                snap.forEach(d => {
-                    msgs.push(d.data());
-                });
-
-                // 按發送時間排序 (遞增呈現，新訊息在最下方)
-                msgs.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-
-                const msgContainer = document.getElementById('chat-messages');
-                msgContainer.innerHTML = '';
-
-                if (msgs.length === 0) {
-                    msgContainer.innerHTML = `
-                        <div class="text-center py-8 text-xs text-gray-400 font-medium">
-                            💬 目前還沒有對話，趕快開始協調出發點與聯絡吧！
-                        </div>
-                    `;
-                } else {
-                    msgs.forEach(msg => {
-                        const isSystem = msg.senderUid === 'system';
-                        const isSelf = msg.senderUid === currentUser.uid;
-
-                        const bubble = document.createElement('div');
-                        if (isSystem) {
-                            bubble.className = "flex justify-center my-1";
-                            bubble.innerHTML = `
-                                <span class="bg-gray-200/60 text-gray-600 px-3 py-1 rounded-xl text-[10px] font-semibold">${msg.content}</span>
-                            `;
-                        } else {
-                            bubble.className = `flex flex-col ${isSelf ? 'items-end' : 'items-start'} my-2`;
-                            bubble.innerHTML = `
-                                <span class="text-[9px] text-gray-400 font-bold mb-0.5 px-1">${msg.senderName}</span>
-                                <div class="max-w-[75%] p-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm ${
-                                    isSelf ? 'bg-black text-white rounded-tr-none' : 'bg-white text-black border border-gray-100 rounded-tl-none'
-                                }">
-                                    ${msg.content}
-                                </div>
-                            `;
-                        }
-                        msgContainer.appendChild(bubble);
-                    });
-                }
-
-                // 滾動到最底
-                msgContainer.scrollTop = msgContainer.scrollHeight;
-            }, (err) => {
-                console.error("載入訊息時發生錯誤：", err);
-            });
-        }
-
-        // 停止詳情與對話的所有監聽
-        function stopActiveRoomListener() {
-            if (activeRoomUnsubscribe) {
-                activeRoomUnsubscribe();
-                activeRoomUnsubscribe = null;
-            }
-            if (chatMessagesUnsubscribe) {
-                chatMessagesUnsubscribe();
-                chatMessagesUnsubscribe = null;
-            }
-            activeRoomId = null;
-        }
-
-        // 發送新聊天訊息
-        const chatForm = document.getElementById('chat-form');
-        const chatInput = document.getElementById('chat-input');
-
-        chatForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const text = chatInput.value.trim();
-            if (!text || !activeRoomId) return;
-
-            chatInput.value = '';
-
-            try {
-                const chatColRef = collection(db, 'artifacts', appId, 'public', 'data', 'rooms', activeRoomId, 'messages');
-                await addDoc(chatColRef, {
-                    senderUid: currentUser.uid,
-                    senderName: userData.nickname,
-                    content: text,
-                    createdAt: new Date().toISOString()
-                });
-            } catch (err) {
-                console.error("發送訊息失敗：", err);
-                showToast("發送失敗，請重試", "error");
-            }
-        });
-
-
-        // 9. 退出/取消拼車房邏輯
-        document.getElementById('btn-leave-group').addEventListener('click', async () => {
-            if (!activeRoomId) return;
-
-            if (confirm('確定要退出這個拼車隊伍嗎？')) {
-                showLoading(true);
-                try {
-                    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', activeRoomId);
-                    const roomSnap = await getDoc(roomDocRef);
-
-                    if (roomSnap.exists()) {
-                        const room = roomSnap.data();
-
-                        // 判斷：若退出者為發起人（房主），則直接解散此局
-                        if (room.creatorUid === currentUser.uid) {
-                            if (confirm('您是本局的發起人，退出將會直接「解散並刪除」這個拼車隊伍，確定嗎？')) {
-                                // 由於是單網頁，我們可以直接覆寫，但為了完全即時與安全，可以改寫或清空。此處我們採用清空或直接刪除
-                                // 為了安全與簡潔，直接將 members 清空代表解散，並發送系統通知
-                                const chatCol = collection(db, 'artifacts', appId, 'public', 'data', 'rooms', activeRoomId, 'messages');
-                                await addDoc(chatCol, {
-                                    senderUid: 'system',
-                                    senderName: '系統',
-                                    content: `⚠️ 本房間已被發起人解散！`,
-                                    createdAt: new Date().toISOString()
-                                });
-                                
-                                // 自訂短暫時間後再導回大廳
-                                setTimeout(async () => {
-                                    // 物理刪除該筆拼車需求 (因無關緊要，此為互助會性質)
-                                    // Firebase 更新可直接進行
-                                    await updateDoc(roomDocRef, {
-                                        members: []
-                                    });
-                                    showToast("已成功解散並取消此拼車需求！", "success");
-                                    navigateTo('list');
-                                    showLoading(false);
-                                }, 1000);
-                                return;
-                            } else {
-                                showLoading(false);
-                                return;
+                        <div className="text-right">
+                          <p className="text-slate-400 font-bold">目前席次</p>
+                          <p className="font-extrabold text-slate-900 mt-0.5">
+                            {ride.type === 'passenger' 
+                              ? `缺額 ${remainingSeats} 人` 
+                              : `剩餘 ${remainingSeats} 個座位`
                             }
-                        }
+                          </p>
+                        </div>
+                      </div>
 
-                        // 若只是一般成員，則單純將自己移出 members 陣列
-                        const selfMemberObj = room.members.find(m => m.uid === currentUser.uid);
-                        if (selfMemberObj) {
-                            await updateDoc(roomDocRef, {
-                                members: arrayRemove(selfMemberObj)
-                            });
+                      {/* 成員列表（若有其他加入者） */}
+                      {ride.joinedUsers.length > 0 && (
+                        <div className="mt-3 pt-2 border-t border-slate-50 flex items-center space-x-1 flex-wrap">
+                          <span className="text-[10px] text-slate-400 font-bold mr-1">同車乘客:</span>
+                          {ride.joinedUsers.map((u, idx) => (
+                            <span key={idx} className="text-[9px] bg-slate-100 text-slate-600 font-bold px-1.5 py-0.5 rounded">
+                              {u.nickname}
+                            </span>
+                          ))}
+                        </div>
+                      )}
 
-                            const chatCol = collection(db, 'artifacts', appId, 'public', 'data', 'rooms', activeRoomId, 'messages');
-                            await addDoc(chatCol, {
-                                senderUid: 'system',
-                                senderName: '系統',
-                                content: `👋 ${userData.nickname} 已退出了拼車。`,
-                                createdAt: new Date().toISOString()
-                            });
+                      {/* 下方核心互動按鈕 */}
+                      <div className="mt-4 flex gap-2">
+                        {isCreator || isJoined ? (
+                          <>
+                            <button
+                              onClick={() => { setActiveRideId(ride.id); setScreen('chat'); }}
+                              className="flex-1 bg-slate-900 hover:bg-slate-850 active:scale-95 text-white font-extrabold text-xs py-3 px-4 rounded-xl tracking-wide transition-all duration-150 shadow-sm flex items-center justify-center space-x-1"
+                            >
+                              💬 進入聊天室
+                            </button>
+                            <button
+                              onClick={() => handleLeaveOrCancelRide(ride)}
+                              className="bg-rose-50 hover:bg-rose-100 text-rose-600 font-extrabold text-xs py-3 px-4 rounded-xl active:scale-95 transition-all"
+                            >
+                              {isCreator ? '取消拼車' : '退出'}
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => handleJoinRide(ride)}
+                            disabled={remainingSeats <= 0}
+                            className={`flex-1 font-extrabold text-xs py-3 px-4 rounded-xl tracking-wide transition-all duration-150 flex items-center justify-center space-x-1 ${
+                              remainingSeats <= 0
+                                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                : 'bg-indigo-600 hover:bg-indigo-700 text-white active:scale-95 shadow-md'
+                            }`}
+                          >
+                            <span>{remainingSeats <= 0 ? '名額已滿' : '我要加入 🚗'}</span>
+                          </button>
+                        )}
+                      </div>
 
-                            showToast("您已成功退出拼車隊伍", "success");
-                            navigateTo('list');
-                        }
-                    }
-                } catch(e) {
-                    console.error("退出隊伍失敗：", e);
-                    showToast("退出失敗，請重試", "error");
-                } finally {
-                    showLoading(false);
-                }
-            }
-        });
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
 
-    </script>
-</body>
-</html>
+        {/* 6. 即時協調聊天室頁面 (Chat Screen) */}
+        {screen === 'chat' && activeRideData && (
+          <div className="flex-1 flex flex-col bg-slate-100">
+            {/* Header */}
+            <div className="bg-white p-4 border-b border-slate-200 flex items-center justify-between shrink-0 shadow-sm z-10">
+              <div className="flex items-center space-x-2">
+                <button 
+                  onClick={() => setScreen('rides_list')}
+                  className="p-2 hover:bg-slate-100 rounded-full active:scale-90 transition-all text-slate-700"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"/></svg>
+                </button>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 leading-tight truncate max-w-[200px]">
+                    {activeRideData.start} ⮕ {activeRideData.destination}
+                  </h3>
+                  <p className="text-[11px] text-slate-500 font-bold mt-0.5">
+                    {activeRideData.creator.nickname} 的共乘協調
+                  </p>
+                </div>
+              </div>
+              
+              {/* 控制點選面板（離開或看聯絡電話） */}
+              <button
+                onClick={() => {
+                  const numbers = [
+                    `${activeRideData.creator.nickname} (發起): ${activeRideData.creator.phone}`,
+                    ...activeRideData.joinedUsers.map(u => `${u.nickname}: ${u.phone}`)
+                  ].join('\n');
+                  alert(`📞 行程成員聯絡方式：\n\n${numbers}`);
+                }}
+                className="bg-slate-100 text-slate-700 text-[11px] font-extrabold py-1.5 px-3 rounded-full hover:bg-slate-200 active:scale-95 transition-all"
+              >
+                聯絡電話
+              </button>
+            </div>
+
+            {/* 成員頂部快捷摘要 */}
+            <div className="bg-slate-50 px-4 py-2 text-[10px] text-slate-500 font-bold border-b border-slate-200 flex flex-wrap gap-1 items-center shrink-0">
+              <span>共乘名單:</span>
+              <span className="bg-slate-900 text-white px-1.5 py-0.5 rounded">{activeRideData.creator.nickname}(主)</span>
+              {activeRideData.joinedUsers.map((u, i) => (
+                <span key={i} className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded">{u.nickname}</span>
+              ))}
+            </div>
+
+            {/* 訊息滾動對話框 */}
+            <div className="flex-1 p-4 space-y-3 overflow-y-auto">
+              <div className="text-center py-2">
+                <span className="text-[10px] bg-slate-200 text-slate-500 px-2.5 py-1 rounded-full font-bold">
+                  🔒 這是一個專屬加密的即時協調區
+                </span>
+              </div>
+
+              {activeMessages.length === 0 ? (
+                <div className="text-center py-8 text-slate-400 text-xs">
+                  目前還沒有人發言，打聲招呼討論上車點吧！
+                </div>
+              ) : (
+                activeMessages.map((msg) => {
+                  const isMe = msg.sender.uid === user.uid;
+                  const isSys = msg.sender.uid === 'system';
+
+                  if (isSys) {
+                    return (
+                      <div key={msg.id} className="text-center my-2">
+                        <span className="text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-100 px-3 py-1 rounded-lg font-bold">
+                          {msg.text}
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div 
+                      key={msg.id}
+                      className={`flex flex-col max-w-[80%] ${isMe ? 'ml-auto items-end' : 'mr-auto items-start'}`}
+                    >
+                      <span className="text-[9px] text-slate-400 font-bold mb-0.5 px-1">
+                        {msg.sender.nickname} ({msg.sender.school})
+                      </span>
+                      <div className={`p-3 rounded-2xl text-xs font-semibold ${
+                        isMe 
+                          ? 'bg-slate-900 text-white rounded-br-none shadow-sm' 
+                          : 'bg-white text-slate-900 rounded-bl-none border border-slate-200 shadow-sm'
+                      }`}>
+                        {msg.text}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* 輸入發送訊息框 */}
+            <form onSubmit={handleSendMessage} className="bg-white p-3 border-t border-slate-200 flex space-x-2 shrink-0">
+              <input
+                type="text"
+                placeholder="發送訊息給共乘隊友..."
+                value={chatMessage}
+                onChange={(e) => setChatMessage(e.target.value)}
+                className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-slate-950 focus:bg-white text-xs font-medium"
+              />
+              <button
+                type="submit"
+                className="bg-slate-900 text-white font-extrabold text-xs px-4 rounded-xl active:scale-95 transition-all hover:bg-slate-800"
+              >
+                發送
+              </button>
+            </form>
+
+            {/* 安全警示區 */}
+            <div className="bg-white px-4 py-1.5 border-t border-slate-100 text-center text-[9px] text-rose-500 font-bold">
+              ⚠️ 小心防詐騙，拼車成功後請務必與同學保持電話聯繫以防跑單。
+            </div>
+          </div>
+        )}
+
+        {/* 頂部/底部 Toast 通知 */}
+        {toastMsg && (
+          <div className="absolute top-12 left-1/2 transform -translate-x-1/2 z-50 bg-slate-900 text-white text-xs font-extrabold py-2.5 px-4 rounded-full shadow-2xl tracking-wide flex items-center space-x-1.5 animate-bounce">
+            <span>ℹ️</span>
+            <span>{toastMsg}</span>
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
