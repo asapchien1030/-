@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>拼一下 Carpool - 大學生專屬拼車平台</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        :root {
+            --bg-color: #FFFFFF;
+            --text-main: #111111;
+            --text-muted: #666666;
+            --accent-black: #000000;
+            --gray-light: #F3F3F3;
+            --gray-border: #E2E2E2;
+            --radius-lg: 16px;
+            --radius-md: 12px;
+            --transition: all 0.2s ease;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            line-height: 1.5;
+            padding-bottom: 30px;
+        }
+
+        /* 頂部導覽列 */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            border-bottom: 1px solid var(--gray-border);
+            position: sticky;
+            top: 0;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(8px);
+            z-index: 100;
+        }
+
+        .logo {
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            cursor: pointer;
+        }
+
+        .logo span {
+            color: var(--text-muted);
+            font-weight: 400;
+            font-size: 14px;
+            margin-left: 5px;
+        }
+
+        .user-status {
+            font-size: 14px;
+            font-weight: 600;
+            background: var(--gray-light);
+            padding: 8px 16px;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .user-status:active {
+            transform: scale(0.95);
+        }
+
+        /* 主要容器 */
+        main {
+            max-width: 500px;
+            margin: 0 auto;
+            padding: 24px 20px;
+        }
+
+        /* 區塊通用樣式 */
+        .page {
+            display: none;
+        }
+
+        .page.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        h2 {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .sub-title {
+            color: var(--text-muted);
+            font-size: 14px;
+            margin-bottom: 24px;
+        }
+
+        /* 現代感大型圓角按鈕 */
+        .btn-large {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+            background: var(--gray-light);
+            color: var(--text-main);
+            border: none;
+            padding: 24px;
+            border-radius: var(--radius-lg);
+            margin-bottom: 16px;
+            font-size: 18px;
+            font-weight: 600;
+            text-align: left;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .btn-large i {
+            font-size: 16px;
+            transition: var(--transition);
+        }
+
+        /* 優化特定重要按鈕視覺 */
+        .btn-large.primary {
+            background: var(--accent-black);
+            color: #FFFFFF;
+        }
+
+        /* 所有按鈕的點擊微動效 */
+        .btn-large:active, .btn-submit:active, .btn-action:active, .back-btn:active {
+            transform: scale(0.97);
+            opacity: 0.9;
+        }
+
+        .btn-large:active i {
+            transform: translateX(4px);
+        }
+
+        /* 表單設計 */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--text-main);
+        }
+
+        .input-control {
+            width: 100%;
+            padding: 16px;
+            border: 2px solid var(--gray-border);
+            border-radius: var(--radius-md);
+            font-size: 16px;
+            outline: none;
+            transition: var(--transition);
+            background: #FAFAFA;
+        }
+
+        .input-control:focus {
+            border-color: var(--accent-black);
+            background: #FFFFFF;
+        }
+
+        .btn-submit {
+            width: 100%;
+            background: var(--accent-black);
+            color: #FFFFFF;
+            border: none;
+            padding: 18px;
+            border-radius: var(--radius-md);
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: var(--transition);
+        }
+
+        /* 返回按鈕 */
+        .back-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-muted);
+            font-weight: 500;
+            margin-bottom: 20px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 15px;
+        }
+
+        /* 需求/座位卡片列表 */
+        .list-container {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-muted);
+            font-size: 15px;
+            border: 2px dashed var(--gray-border);
+            border-radius: var(--radius-lg);
+        }
+
+        .empty-state i {
+            font-size: 32px;
+            margin-bottom: 12px;
+            display: block;
+        }
+
+        .card {
+            background: #FFFFFF;
+            border: 1px solid var(--gray-border);
+            border-radius: var(--radius-lg);
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.02);
+            position: relative;
+        }
+
+        .card-tag {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .tag-passenger { background: #E3F2FD; color: #0D47A1; }
+        .tag-driver { background: #E8F5E9; color: #1B5E20; }
+
+        .route-info {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 16px;
+            position: relative;
+        }
+
+        .route-point {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .route-point i {
+            font-size: 14px;
+            width: 16px;
+            text-align: center;
+        }
+
+        .route-point.from i { color: #0084FF; }
+        .route-point.to i { color: #00C853; }
+
+        .card-details {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 12px;
+            border-top: 1px solid var(--gray-light);
+            margin-bottom: 16px;
+            font-size: 14px;
+            color: var(--text-muted);
+        }
+
+        .detail-item i {
+            margin-right: 4px;
+        }
+
+        .btn-action {
+            width: 100%;
+            background: var(--gray-light);
+            color: var(--text-main);
+            border: none;
+            padding: 12px;
+            border-radius: var(--radius-md);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .btn-action.active-join {
+            background: var(--accent-black);
+            color: #FFFFFF;
+        }
+
+        /* 獨立底部聊天視窗 */
+        .chat-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 200;
+            display: none;
+            align-items: flex-end;
+        }
+
+        .chat-container {
+            width: 100%;
+            max-width: 500px;
+            margin: 0 auto;
+            background: #FFFFFF;
+            border-top-left-radius: var(--radius-lg);
+            border-top-right-radius: var(--radius-lg);
+            height: 80vh;
+            display: flex;
+            flex-direction: column;
+            animation: slideUp 0.3s cubic-bezier(0.1, 1, 0.1, 1);
+        }
+
+        @keyframes slideUp {
+            from { transform: translateY(100%); }
+            to { transform: translateY(0); }
+        }
+
+        .chat-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--gray-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-title {
+            font-weight: 700;
+            font-size: 16px;
+        }
+
+        .close-chat {
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: var(--text-muted);
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: #F9F9F9;
+        }
+
+        .msg {
+            max-width: 75%;
+            padding: 12px 16px;
+            border-radius: var(--radius-md);
+            font-size: 14px;
+            line-height: 1.4;
+        }
+
+        .msg.system {
+            align-self: center;
+            background: #EAEAEA;
+            color: var(--text-muted);
+            font-size: 12px;
+            padding: 6px 12px;
+            border-radius: 20px;
+        }
+
+        .msg.received {
+            align-self: flex-start;
+            background: #FFFFFF;
+            color: var(--text-main);
+            border: 1px solid var(--gray-border);
+        }
+
+        .msg.sent {
+            align-self: flex-end;
+            background: var(--accent-black);
+            color: #FFFFFF;
+        }
+
+        .chat-input-area {
+            padding: 16px;
+            border-top: 1px solid var(--gray-border);
+            display: flex;
+            gap: 12px;
+            background: #FFFFFF;
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid var(--gray-border);
+            border-radius: 24px;
+            outline: none;
+            font-size: 15px;
+        }
+
+        .btn-send {
+            background: var(--accent-black);
+            color: #FFFFFF;
+            border: none;
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+        
+        .btn-send:active {
+            transform: scale(0.9);
+        }
+
+        /* 吐司提示 (Toast Notification) */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: rgba(0,0,0,0.85);
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 30px;
+            font-size: 14px;
+            font-weight: 500;
+            z-index: 300;
+            transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            pointer-events: none;
+            white-space: nowrap;
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo" onclick="navigateTo('homePage')">拼一下<span>Carpool</span></div>
+        <div class="user-status" id="userStatusBtn" onclick="toggleUserRole()">
+            <i class="fa-solid fa-user-grad"></i> 學號認證登入中
+        </div>
+    </header>
+
+    <main>
+        <section id="homePage" class="page active">
+            <h2>去哪裡都能拼。</h2>
+            <p class="sub-title">校園專屬的極簡安全拼車媒合平台</p>
+            
+            <button class="btn-large primary" onclick="navigateTo('findPage')">
+                <span>我要找拼車</span>
+                <i class="fa-solid fa-arrow-right"></i>
+            </button>
+            
+            <button class="btn-large" onclick="navigateTo('offerPage')">
+                <span>我要提供座位</span>
+                <i class="fa-solid fa-arrow-right"></i>
+            </button>
+            
+            <button class="btn-large" onclick="navigateTo('listPage')">
+                <span>查看目前需求</span>
+                <i class="fa-solid fa-arrow-right"></i>
+            </button>
+        </section>
+
+        <section id="findPage" class="page">
+            <button class="back-btn" onclick="navigateTo('homePage')">
+                <i class="fa-solid fa-chevron-left"></i> 返回首頁
+            </button>
+            <h2>發布你的拼車需求</h2>
+            <p class="sub-title">填寫目的地，讓有車的同學載你一程</p>
+            
+            <form id="findForm" onsubmit="handleFormSubmit(event, 'passenger')">
+                <div class="form-group">
+                    <label>出發地</label>
+                    <input type="text" class="input-control" placeholder="例如：國立台灣大學正門" required>
+                </div>
+                <div class="form-group">
+                    <label>目的地</label>
+                    <input type="text" class="input-control" placeholder="例如：新竹科學園區" required>
+                </div>
+                <div class="form-group">
+                    <label>出發時間</label>
+                    <input type="datetime-local" class="input-control" required>
+                </div>
+                <div class="form-group">
+                    <label>乘車人數</label>
+                    <input type="number" class="input-control" min="1" max="10" placeholder="1" required>
+                </div>
+                <button type="submit" class="btn-submit">送出需求</button>
+            </form>
+        </section>
+
+        <section id="offerPage" class="page">
+            <button class="back-btn" onclick="navigateTo('homePage')">
+                <i class="fa-solid fa-chevron-left"></i> 返回首頁
+            </button>
+            <h2>發布你的空位</h2>
+            <p class="sub-title">分享空位給同學，分攤油資更環保</p>
+            
+            <form id="offerForm" onsubmit="handleFormSubmit(event, 'driver')">
+                <div class="form-group">
+                    <label>出發地</label>
+                    <input type="text" class="input-control" placeholder="例如：台北車站東三門" required>
+                </div>
+                <div class="form-group">
+                    <label>目的地</label>
+                    <input type="text" class="input-control" placeholder="例如：國立清華大學校本部" required>
+                </div>
+                <div class="form-group">
+                    <label>出發時間</label>
+                    <input type="datetime-local" class="input-control" required>
+                </div>
+                <div class="form-group">
+                    <label>可提供座位數</label>
+                    <input type="number" class="input-control" min="1" max="10" placeholder="3" required>
+                </div>
+                <button type="submit" class="btn-submit">發布座位</button>
+            </form>
+        </section>
+
+        <section id="listPage" class="page">
+            <button class="back-btn" onclick="navigateTo('homePage')">
+                <i class="fa-solid fa-chevron-left"></i> 返回首頁
+            </button>
+            <h2>目前所有媒合需求</h2>
+            <p class="sub-title">點擊「我要加入」即可直接線上與同學確認</p>
+            
+            <div id="poolList" class="list-container">
+                </div>
+        </section>
+    </main>
+
+    <div id="chatOverlay" class="chat-overlay">
+        <div class="chat-container">
+            <div class="chat-header">
+                <div class="chat-title" id="chatTitle">與 同學 聯絡中</div>
+                <button class="close-chat" onclick="closeChat()"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="chat-messages" id="chatMessages">
+                </div>
+            <div class="chat-input-area">
+                <input type="text" id="chatInput" class="chat-input" placeholder="輸入訊息..." onkeypress="handleChatKeyPress(event)">
+                <button class="btn-send" onclick="sendChatMessage()"><i class="fa-solid fa-paper-plane"></i></button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast">提示訊息</div>
+
+    <script>
+        // 全局核心狀態管理 (不使用死資料，完全響應即時輸入)
+        const carpoolState = {
+            currentUser: {
+                id: "user_01",
+                name: "陳同學"
+            },
+            // 未來擴充直接對接 API 資料庫
+            items: [] 
+        };
+
+        // 頁面導覽控制
+        function navigateTo(pageId) {
+            document.querySelectorAll('.page').forEach(page => {
+                page.classList.remove('active');
+            });
+            document.getElementById(pageId).classList.add('active');
+            window.scrollTo(0, 0);
+
+            if(pageId === 'listPage') {
+                renderList();
+            }
+        }
+
+        // 表單提交處理（找拼車與提供座位通用）
+        function handleFormSubmit(event, type) {
+            event.preventDefault();
+            const form = event.target;
+            const inputs = form.querySelectorAll('.input-control');
+            
+            const from = inputs[0].value;
+            const to = inputs[1].value;
+            const time = new Date(inputs[2].value).toLocaleString('zh-TW', {
+                month: 'numeric',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            const amount = inputs[3].value;
+
+            // 建立真實結構物件，便於未來擴充擴展
+            const newItem = {
+                id: 'id_' + Date.now(),
+                type: type, // 'passenger' 或 'driver'
+                user: type === 'passenger' ? '乘客同學' : '車主同學',
+                from: from,
+                to: to,
+                time: time,
+                amount: amount
+            };
+
+            carpoolState.items.unshift(newItem); // 最新發布置頂
+            form.reset();
+            
+            showToast(type === 'passenger' ? '需求發布成功！已加入媒合清單' : '座位發布成功！已加入媒合清單');
+            navigateTo('listPage');
+        }
+
+        // 渲染「查看目前需求」的卡片列表
+        function renderList() {
+            const listContainer = document.getElementById('poolList');
+            listContainer.innerHTML = '';
+
+            if (carpoolState.items.length === 0) {
+                listContainer.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fa-solid fa-car-tunnel"></i>
+                        目前尚無拼車需求或空位。<br>快去發布第一個專屬行程吧！
+                    </div>
+                `;
+                return;
+            }
+
+            carpoolState.items.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                
+                const isPassenger = item.type === 'passenger';
+                const tagClass = isPassenger ? 'tag-passenger' : 'tag-driver';
+                const tagText = isPassenger ? '找拼車' : '有空位';
+                const amountText = isPassenger ? `缺額 ${item.amount} 人` : `剩餘 ${item.amount} 位`;
+
+                card.innerHTML = `
+                    <span class="card-tag ${tagClass}">${tagText}</span>
+                    <div class="route-info">
+                        <div class="route-point from">
+                            <i class="fa-solid fa-circle-dot"></i>
+                            <span>${item.from}</span>
+                        </div>
+                        <div class="route-point to">
+                            <i class="fa-solid fa-location-dot"></i>
+                            <span>${item.to}</span>
+                        </div>
+                    </div>
+                    <div class="card-details">
+                        <div class="detail-item">
+                            <i class="fa-regular fa-clock"></i> ${item.time}
+                        </div>
+                        <div class="detail-item" style="font-weight:600; color:var(--text-main)">
+                            ${amountText}
+                        </div>
+                    </div>
+                    <button class="btn-action active-join" onclick="openChat('${item.user}', '${item.from}', '${item.to}')">
+                        我要加入
+                    </button>
+                `;
+                listContainer.appendChild(card);
+            });
+        }
+
+        // 獨立功能：即時模擬對話（整合真實資料與點擊事件）
+        let activeChatInterval = null;
+
+        function openChat(userName, from, to) {
+            const overlay = document.getElementById('chatOverlay');
+            const title = document.getElementById('chatTitle');
+            const msgBox = document.getElementById('chatMessages');
+            
+            title.innerText = `與 【${userName}】 的拼車對話`;
+            msgBox.innerHTML = `
+                <div class="msg system">系統提示：你已發出拼車請求，行程為「${from} ➔ ${to}」</div>
+                <div class="msg received">哈囉同學！我有看到你點擊加入了，這個行程的時間你可以嗎？</div>
+            `;
+            
+            overlay.style.display = 'flex';
+            document.body.style.overflow = 'hidden'; // 鎖定底層滾動，提升手機手感
+            msgBox.scrollTop = msgBox.scrollHeight;
+        }
+
+        function closeChat() {
+            document.getElementById('chatOverlay').style.display = 'none';
+            document.body.style.overflow = 'auto';
+        }
+
+        function sendChatMessage() {
+            const input = document.getElementById('chatInput');
+            const text = input.value.trim();
+            if(!text) return;
+
+            const msgBox = document.getElementById('chatMessages');
+            
+            // 渲染使用者發送的對話
+            const myMsg = document.createElement('div');
+            myMsg.className = 'msg sent';
+            myMsg.innerText = text;
+            msgBox.appendChild(myMsg);
+            
+            input.value = '';
+            msgBox.scrollTop = msgBox.scrollHeight;
+
+            // 模擬對方的即時回覆
+            setTimeout(() => {
+                const replyMsg = document.createElement('div');
+                replyMsg.className = 'msg received';
+                replyMsg.innerText = '沒問題！那當天我們依據這個地點準時見面，到時候見！';
+                msgBox.appendChild(replyMsg);
+                msgBox.scrollTop = msgBox.scrollHeight;
+            }, 1000);
+        }
+
+        function handleChatKeyPress(event) {
+            if(event.key === 'Enter') {
+                sendChatMessage();
+            }
+        }
+
+        // 提示小工具
+        function showToast(text) {
+            const toast = document.getElementById('toast');
+            toast.innerText = text;
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // 會員身份展示點擊切換功能
+        function toggleUserRole() {
+            showToast("已重置並驗證校園安全登入憑證狀態完成");
+        }
+    </script>
+</body>
+</html>
