@@ -1,1 +1,743 @@
-# -
+
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>拼一下！GoSharePlus - 大學生極簡拼車平台</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts: Inter & Noto Sans TC -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+TC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'Noto Sans TC', 'sans-serif'],
+                    },
+                    borderRadius: {
+                        '4xl': '2rem',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* 隱藏捲軸但保留功能 */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        
+        /* 按鈕縮放回饋效果 */
+        .btn-bounce {
+            transition: transform 0.1s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        .btn-bounce:active {
+            transform: scale(0.96);
+        }
+        
+        /* 頁面切換過渡 */
+        .page-transition {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-neutral-900 font-sans min-h-screen flex justify-center antialiased">
+
+    <!-- 手機容器（在桌面版會置中限制寬度，手機版則滿版） -->
+    <div class="w-full max-w-md bg-white min-h-screen flex flex-col justify-between shadow-2xl relative overflow-hidden border-x border-neutral-100">
+        
+        <!-- 頂部導覽列 -->
+        <header class="px-6 pt-6 pb-4 flex justify-between items-center bg-white/80 backdrop-blur-md sticky top-0 z-40">
+            <div class="flex items-center space-x-2" onclick="goHome()" class="cursor-pointer">
+                <div class="w-9 h-9 bg-black rounded-xl flex items-center justify-center text-white font-black text-lg shadow-sm">拼</div>
+                <span class="text-xl font-black tracking-tight text-neutral-900">拼一下！<span class="text-neutral-500 font-medium text-sm">GoShare</span></span>
+            </div>
+            <div id="notification-bell" class="relative w-10 h-10 bg-neutral-100 rounded-full flex items-center justify-center text-neutral-600 btn-bounce cursor-pointer" onclick="toggleNotificationHistory()">
+                <i class="fa-regular fa-bell text-lg"></i>
+                <span id="notif-badge" class="absolute top-1 right-1 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-white hidden"></span>
+            </div>
+        </header>
+
+        <!-- 主內容區域 -->
+        <main class="flex-1 px-6 pb-24 overflow-y-auto no-scrollbar">
+            
+            <!-- ================= 首頁區塊 ================= -->
+            <section id="home-page" class="page-transition space-y-8 py-4">
+                <!-- 歡迎語標題 -->
+                <div class="space-y-2 mt-2">
+                    <h1 class="text-3xl font-extrabold tracking-tight leading-tight">
+                        今天想去哪？<br>我們一起「拼」！
+                    </h1>
+                    <p class="text-neutral-500 text-sm">校園專屬拼車平台 • 省錢、環保、結交新朋友</p>
+                </div>
+
+                <!-- 輪播或亮點圖卡 -->
+                <div class="bg-neutral-900 text-white p-6 rounded-3xl space-y-4 relative overflow-hidden shadow-xl">
+                    <div class="absolute -right-10 -bottom-10 w-40 h-40 bg-neutral-800 rounded-full opacity-50 blur-xl"></div>
+                    <div class="relative z-10 space-y-2">
+                        <span class="bg-emerald-500/20 text-emerald-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-emerald-500/30">
+                            <i class="fa-solid fa-sparkles mr-1"></i>熱門路線
+                        </span>
+                        <h3 class="text-xl font-bold pt-1">台北校區 ↔ 中壢火車站</h3>
+                        <p class="text-neutral-400 text-xs">平均每人僅需 $45 元起，已有 280+ 人參與</p>
+                    </div>
+                </div>
+
+                <!-- 核心三大按鈕 -->
+                <div class="space-y-4 pt-2">
+                    <!-- 我要找拼車 -->
+                    <button onclick="openPage('find-car-page')" class="btn-bounce w-full bg-black text-white hover:bg-neutral-800 p-6 rounded-3xl flex items-center justify-between shadow-lg shadow-neutral-200">
+                        <div class="text-left space-y-1">
+                            <span class="text-xs uppercase tracking-wider text-neutral-400 font-semibold">Passenger</span>
+                            <h2 class="text-xl font-bold">我要找拼車</h2>
+                            <p class="text-xs text-neutral-300">沒車也免驚！發布需求找車主</p>
+                        </div>
+                        <div class="w-12 h-12 bg-neutral-800 rounded-2xl flex items-center justify-center text-xl">
+                            <i class="fa-solid fa-person-hiking"></i>
+                        </div>
+                    </button>
+
+                    <!-- 我要提供座位 -->
+                    <button onclick="openPage('offer-seat-page')" class="btn-bounce w-full bg-neutral-100 hover:bg-neutral-200 text-neutral-900 p-6 rounded-3xl flex items-center justify-between">
+                        <div class="text-left space-y-1">
+                            <span class="text-xs uppercase tracking-wider text-neutral-500 font-semibold">Driver</span>
+                            <h2 class="text-xl font-bold">我要提供座位</h2>
+                            <p class="text-xs text-neutral-500">有車順路載！分享空位賺補貼</p>
+                        </div>
+                        <div class="w-12 h-12 bg-white rounded-2xl flex items-center justify-center text-neutral-800 shadow-sm">
+                            <i class="fa-solid fa-car-side"></i>
+                        </div>
+                    </button>
+
+                    <!-- 查看目前需求 -->
+                    <button onclick="openPage('view-list-page')" class="btn-bounce w-full bg-white hover:bg-neutral-50 text-neutral-900 p-6 rounded-3xl flex items-center justify-between border-2 border-neutral-100 shadow-sm">
+                        <div class="text-left space-y-1">
+                            <span class="text-xs uppercase tracking-wider text-neutral-500 font-semibold">Explore</span>
+                            <h2 class="text-xl font-bold">查看目前需求</h2>
+                            <p class="text-xs text-neutral-500">逛逛熱門拼車單，一鍵秒加入</p>
+                        </div>
+                        <div class="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center text-xl">
+                            <i class="fa-solid fa-list-ul"></i>
+                        </div>
+                    </button>
+                </div>
+            </section>
+
+
+            <!-- ================= 我要找拼車 表單 ================= -->
+            <section id="find-car-page" class="page-transition hidden space-y-6 py-4">
+                <!-- 返回按鈕 -->
+                <button onclick="goHome()" class="btn-bounce flex items-center space-x-2 text-neutral-500 font-medium text-sm">
+                    <i class="fa-solid fa-arrow-left"></i> <span>返回首頁</span>
+                </button>
+
+                <div class="space-y-1">
+                    <h1 class="text-2xl font-bold tracking-tight">我要找拼車</h1>
+                    <p class="text-neutral-500 text-xs">填寫您的出發資訊，讓順路的車主聯繫您</p>
+                </div>
+
+                <!-- 表單 -->
+                <form id="find-car-form" onsubmit="handleFindCarSubmit(event)" class="space-y-5">
+                    <div class="space-y-1.5">
+                        <label class="text-xs font-bold text-neutral-700 uppercase tracking-wider">出發地</label>
+                        <div class="relative">
+                            <span class="absolute inset-y-0 left-4 flex items-center text-emerald-500">
+                                <i class="fa-solid fa-location-dot"></i>
+                            </span>
+                            <input type="text" id="find-start" required placeholder="例如：台大校門口、台北車站" 
+                                class="w-full pl-11 pr-4 py-4 bg-neutral-50 border border-neutral-200 rounded-2xl text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black transition">
+                        </div>
+                    </div>
+
+                    <div class="space-y-1.5">
+                        <label class="text-xs font-bold text-neutral-700 uppercase tracking-wider">目的地</label>
+                        <div class="relative">
+                            <span class="absolute inset-y-0 left-4 flex items-center text-rose-500">
+                                <i class="fa-solid fa-flag"></i>
+                            </span>
+                            <input type="text" id="find-end" required placeholder="例如：淡水老街、新竹科學園區" 
+                                class="w-full pl-11 pr-4 py-4 bg-neutral-50 border border-neutral-200 rounded-2xl text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black transition">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="space-y-1.5">
+                            <label class="text-xs font-bold text-neutral-700 uppercase tracking-wider">出發時間</label>
+                            <input type="datetime-local" id="find-time" required 
+                                class="w-full px-4 py-4 bg-neutral-50 border border-neutral-200 rounded-2xl text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black transition">
+                        </div>
+                        <div class="space-y-1.5">
+                            <label class="text-xs font-bold text-neutral-700 uppercase tracking-wider">乘客人數</label>
+                            <select id="find-passengers" class="w-full px-4 py-4 bg-neutral-50 border border-neutral-200 rounded-2xl text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black transition appearance-none">
+                                <option value="1">1 人</option>
+                                <option value="2">2 人</option>
+                                <option value="3">3 人</option>
+                                <option value="4">4 人以上</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="pt-4">
+                        <button type="submit" class="btn-bounce w-full bg-black text-white py-4 rounded-2xl font-bold shadow-lg shadow-neutral-200 flex items-center justify-center space-x-2">
+                            <span>送出拼車需求</span>
+                            <i class="fa-solid fa-paper-plane text-xs"></i>
+                        </button>
+                    </div>
+                </form>
+            </section>
+
+
+            <!-- ================= 我要提供座位 表單 ================= -->
+            <section id="offer-seat-page" class="page-transition hidden space-y-6 py-4">
+                <!-- 返回按鈕 -->
+                <button onclick="goHome()" class="btn-bounce flex items-center space-x-2 text-neutral-500 font-medium text-sm">
+                    <i class="fa-solid fa-arrow-left"></i> <span>返回首頁</span>
+                </button>
+
+                <div class="space-y-1">
+                    <h1 class="text-2xl font-bold tracking-tight">我要提供座位</h1>
+                    <p class="text-neutral-500 text-xs">發布您的車輛空餘座位，尋找志同道合的乘客</p>
+                </div>
+
+                <!-- 表單 -->
+                <form id="offer-seat-form" onsubmit="handleOfferSeatSubmit(event)" class="space-y-5">
+                    <div class="space-y-1.5">
+                        <label class="text-xs font-bold text-neutral-700 uppercase tracking-wider">出發地</label>
+                        <div class="relative">
+                            <span class="absolute inset-y-0 left-4 flex items-center text-emerald-500">
+                                <i class="fa-solid fa-location-dot"></i>
+                            </span>
+                            <input type="text" id="offer-start" required placeholder="例如：陽明交通大學、清大門口" 
+                                class="w-full pl-11 pr-4 py-4 bg-neutral-50 border border-neutral-200 rounded-2xl text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black transition">
+                        </div>
+                    </div>
+
+                    <div class="space-y-1.5">
+                        <label class="text-xs font-bold text-neutral-700 uppercase tracking-wider">目的地</label>
+                        <div class="relative">
+                            <span class="absolute inset-y-0 left-4 flex items-center text-rose-500">
+                                <i class="fa-solid fa-flag"></i>
+                            </span>
+                            <input type="text" id="offer-end" required placeholder="例如：板橋高鐵站、中壢中正路" 
+                                class="w-full pl-11 pr-4 py-4 bg-neutral-50 border border-neutral-200 rounded-2xl text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black transition">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="space-y-1.5">
+                            <label class="text-xs font-bold text-neutral-700 uppercase tracking-wider">出發時間</label>
+                            <input type="datetime-local" id="offer-time" required 
+                                class="w-full px-4 py-4 bg-neutral-50 border border-neutral-200 rounded-2xl text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black transition">
+                        </div>
+                        <div class="space-y-1.5">
+                            <label class="text-xs font-bold text-neutral-700 uppercase tracking-wider">提供空座位數</label>
+                            <select id="offer-seats" class="w-full px-4 py-4 bg-neutral-50 border border-neutral-200 rounded-2xl text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black transition appearance-none">
+                                <option value="1">1 個座位</option>
+                                <option value="2">2 個座位</option>
+                                <option value="3">3 個座位</option>
+                                <option value="4">4 個座位</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="pt-4">
+                        <button type="submit" class="btn-bounce w-full bg-neutral-900 hover:bg-black text-white py-4 rounded-2xl font-bold shadow-lg shadow-neutral-200 flex items-center justify-center space-x-2">
+                            <span>發布空座位</span>
+                            <i class="fa-solid fa-car text-xs"></i>
+                        </button>
+                    </div>
+                </form>
+            </section>
+
+
+            <!-- ================= 查看目前需求 列表 ================= -->
+            <section id="view-list-page" class="page-transition hidden space-y-4 py-4">
+                <!-- 返回按鈕 -->
+                <div class="flex justify-between items-center">
+                    <button onclick="goHome()" class="btn-bounce flex items-center space-x-2 text-neutral-500 font-medium text-sm">
+                        <i class="fa-solid fa-arrow-left"></i> <span>返回首頁</span>
+                    </button>
+                    <!-- 快速搜尋按鈕 -->
+                    <div class="relative w-1/2">
+                        <input type="text" id="search-input" oninput="filterCards()" placeholder="搜尋出發地/目的..." 
+                            class="w-full pl-8 pr-3 py-1.5 bg-neutral-100 text-xs rounded-xl focus:outline-none focus:ring-1 focus:ring-black transition">
+                        <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-2.5 text-neutral-400 text-[10px]"></i>
+                    </div>
+                </div>
+
+                <!-- 分頁頁籤 Tab (切換乘客需求 or 司機空位) -->
+                <div class="bg-neutral-100 p-1 rounded-2xl flex">
+                    <button onclick="switchTab('passenger')" id="tab-passenger" class="flex-1 py-3 text-sm font-bold rounded-xl transition text-center bg-white text-black shadow-sm">
+                        <i class="fa-solid fa-user-group mr-1.5"></i>找拼車人 (乘客)
+                    </button>
+                    <button onclick="switchTab('driver')" id="tab-driver" class="flex-1 py-3 text-sm font-bold rounded-xl transition text-center text-neutral-500 hover:text-neutral-800">
+                        <i class="fa-solid fa-car-side mr-1.5"></i>找空座位 (司機)
+                    </button>
+                </div>
+
+                <!-- 列表展示區 -->
+                <div id="cards-container" class="space-y-4 pt-2">
+                    <!-- 卡片動態生成 -->
+                </div>
+            </section>
+
+        </main>
+
+        <!-- 底部導覽欄（常用於手機版固定在底部） -->
+        <nav class="absolute bottom-0 inset-x-0 bg-white/95 backdrop-blur-md border-t border-neutral-100 py-3 px-8 flex justify-between items-center z-40">
+            <button onclick="goHome()" class="flex flex-col items-center space-y-1 text-black btn-bounce">
+                <i class="fa-solid fa-house text-lg"></i>
+                <span class="text-[10px] font-bold">首頁</span>
+            </button>
+            <button onclick="openPage('find-car-page')" class="flex flex-col items-center space-y-1 text-neutral-400 hover:text-neutral-800 btn-bounce">
+                <i class="fa-solid fa-person-hiking text-lg"></i>
+                <span class="text-[10px] font-medium">找拼車</span>
+            </button>
+            <button onclick="openPage('offer-seat-page')" class="flex flex-col items-center space-y-1 text-neutral-400 hover:text-neutral-800 btn-bounce">
+                <i class="fa-solid fa-car text-lg"></i>
+                <span class="text-[10px] font-medium">給座位</span>
+            </button>
+            <button onclick="openPage('view-list-page')" class="flex flex-col items-center space-y-1 text-neutral-400 hover:text-neutral-800 btn-bounce">
+                <i class="fa-solid fa-list-ul text-lg"></i>
+                <span class="text-[10px] font-medium">看需求</span>
+            </button>
+        </nav>
+
+        <!-- ================= 全域彈出通知系統 ================= -->
+        <div id="toast-notification" class="absolute top-20 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-6 py-3.5 rounded-2xl shadow-xl z-50 flex items-center space-x-3 transition-all duration-300 transform scale-90 opacity-0 pointer-events-none">
+            <div class="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-white text-xs">
+                <i class="fa-solid fa-check"></i>
+            </div>
+            <span id="toast-message" class="text-xs font-semibold tracking-wide">需求發布成功！</span>
+        </div>
+
+        <!-- 歷史通知清單抽屜 (模擬系統) -->
+        <div id="notif-drawer" class="absolute inset-x-0 bottom-0 top-16 bg-white/95 backdrop-blur-lg border-t border-neutral-100 z-50 p-6 flex flex-col justify-between transform translate-y-full transition-transform duration-300">
+            <div class="space-y-4 flex-1 overflow-y-auto no-scrollbar">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-lg font-bold">系統通知歷史</h3>
+                    <button onclick="toggleNotificationHistory()" class="text-neutral-400 hover:text-neutral-600"><i class="fa-solid fa-xmark text-lg"></i></button>
+                </div>
+                <div id="notif-list" class="space-y-3">
+                    <!-- 模擬通知 -->
+                    <div class="p-3.5 bg-neutral-50 rounded-2xl flex items-start space-x-3">
+                        <div class="w-8 h-8 bg-emerald-100 rounded-full flex items-center justify-center text-emerald-600 flex-shrink-0 text-xs">
+                            <i class="fa-solid fa-bell"></i>
+                        </div>
+                        <div>
+                            <p class="text-xs font-bold">歡迎使用 拼一下！</p>
+                            <p class="text-[11px] text-neutral-500 mt-0.5">今天開始和大學夥伴們一起拼車出發吧！</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <button onclick="clearNotif()" class="w-full py-3 bg-neutral-100 hover:bg-neutral-200 rounded-xl text-xs font-semibold mt-4">清空通知</button>
+        </div>
+
+    </div>
+
+    <script>
+        // 初始化假資料
+        let carpoolRequests = [
+            {
+                id: 1,
+                type: 'passenger', // passenger: 找司機, driver: 找乘客
+                start: '國立臺灣大學正門',
+                end: '新竹科學園區 (介壽路)',
+                time: '今天 18:30',
+                count: 2, // 人數或座位
+                status: '待媒合',
+                contact: '王同學',
+                major: '資工系'
+            },
+            {
+                id: 2,
+                type: 'passenger',
+                start: '輔仁大學校門口',
+                end: '桃園火車站',
+                time: '明天 09:00',
+                count: 1,
+                status: '待媒合',
+                contact: '李同學',
+                major: '企管系'
+            },
+            {
+                id: 3,
+                type: 'driver',
+                start: '成功大學光復校區',
+                end: '台南高鐵站',
+                time: '今天 15:45',
+                count: 3, // 可提供空位
+                status: '有空位',
+                contact: '陳學長 (Model 3)',
+                major: '電機所'
+            },
+            {
+                id: 4,
+                type: 'driver',
+                start: '政治大學正門',
+                end: '台北車站 (東三門)',
+                time: '後天 10:30',
+                count: 4,
+                status: '有空位',
+                contact: '張同學 (RAV4)',
+                major: '法律系'
+            }
+        ];
+
+        // 當前展示的分頁
+        let currentTab = 'passenger';
+
+        // 頁面切換控制
+        function openPage(pageId) {
+            // 隱藏所有頁面
+            document.getElementById('home-page').classList.add('hidden');
+            document.getElementById('find-car-page').classList.add('hidden');
+            document.getElementById('offer-seat-page').classList.add('hidden');
+            document.getElementById('view-list-page').classList.add('hidden');
+
+            // 顯示目標頁面
+            const targetPage = document.getElementById(pageId);
+            targetPage.classList.remove('hidden');
+            
+            // 更新底部 Nav 樣式
+            updateNavStyles(pageId);
+
+            // 若切換到列表，則重新渲染卡片
+            if (pageId === 'view-list-page') {
+                renderCards();
+            }
+
+            // 關閉通知抽屜
+            closeNotifDrawer();
+        }
+
+        // 返回首頁
+        function goHome() {
+            openPage('home-page');
+        }
+
+        // 更新底部導覽列按鈕點亮狀態
+        function updateNavStyles(activePageId) {
+            const navButtons = document.querySelectorAll('nav button');
+            navButtons.forEach(btn => {
+                btn.classList.add('text-neutral-400');
+                btn.classList.remove('text-black');
+                const span = btn.querySelector('span');
+                if (span) {
+                    span.classList.remove('font-bold');
+                    span.classList.add('font-medium');
+                }
+            });
+
+            let activeIndex = 0;
+            if (activePageId === 'find-car-page') activeIndex = 1;
+            if (activePageId === 'offer-seat-page') activeIndex = 2;
+            if (activePageId === 'view-list-page') activeIndex = 3;
+
+            navButtons[activeIndex].classList.remove('text-neutral-400');
+            navButtons[activeIndex].classList.add('text-black');
+            const activeSpan = navButtons[activeIndex].querySelector('span');
+            if (activeSpan) {
+                activeSpan.classList.remove('font-medium');
+                activeSpan.classList.add('font-bold');
+            }
+        }
+
+        // 頁籤切換
+        function switchTab(tabType) {
+            currentTab = tabType;
+            const tabPassenger = document.getElementById('tab-passenger');
+            const tabDriver = document.getElementById('tab-driver');
+
+            if (tabType === 'passenger') {
+                tabPassenger.className = "flex-1 py-3 text-sm font-bold rounded-xl transition text-center bg-white text-black shadow-sm";
+                tabDriver.className = "flex-1 py-3 text-sm font-bold rounded-xl transition text-center text-neutral-500 hover:text-neutral-800";
+            } else {
+                tabDriver.className = "flex-1 py-3 text-sm font-bold rounded-xl transition text-center bg-white text-black shadow-sm";
+                tabPassenger.className = "flex-1 py-3 text-sm font-bold rounded-xl transition text-center text-neutral-500 hover:text-neutral-800";
+            }
+
+            renderCards();
+        }
+
+        // 渲染卡片
+        function renderCards(filterKeyword = '') {
+            const container = document.getElementById('cards-container');
+            container.innerHTML = '';
+
+            const filtered = carpoolRequests.filter(item => {
+                if (item.type !== currentTab) return false;
+                if (filterKeyword) {
+                    const kw = filterKeyword.toLowerCase();
+                    return item.start.toLowerCase().includes(kw) || item.end.toLowerCase().includes(kw);
+                }
+                return true;
+            });
+
+            if (filtered.length === 0) {
+                container.innerHTML = `
+                    <div class="py-12 text-center text-neutral-400 space-y-2">
+                        <i class="fa-regular fa-folder-open text-3xl"></i>
+                        <p class="text-sm">目前沒有相符的拼車需求喔！</p>
+                    </div>
+                `;
+                return;
+            }
+
+            filtered.forEach(item => {
+                const card = document.createElement('div');
+                card.className = "bg-white border border-neutral-100 rounded-3xl p-5 shadow-sm hover:shadow-md transition space-y-4 relative overflow-hidden";
+                
+                // 定義顏色風格
+                const isPassenger = item.type === 'passenger';
+                const badgeColor = isPassenger ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600';
+                const countLabel = isPassenger ? `缺 ${item.count} 人` : `剩餘 ${item.count} 個空位`;
+                
+                card.innerHTML = `
+                    <!-- 頂部卡片資訊 -->
+                    <div class="flex justify-between items-start">
+                        <div class="space-y-1">
+                            <div class="flex items-center space-x-2">
+                                <span class="text-xs font-bold px-2.5 py-1 rounded-full ${badgeColor}">
+                                    ${isPassenger ? '乘客找車' : '車主提供'}
+                                </span>
+                                <span class="text-neutral-400 text-[11px]">${item.contact} (${item.major})</span>
+                            </div>
+                        </div>
+                        <span class="text-xs font-bold text-neutral-800 bg-neutral-100 px-3 py-1 rounded-full">${countLabel}</span>
+                    </div>
+
+                    <!-- 起訖路線設計 (類似地圖引導線) -->
+                    <div class="space-y-3 relative pl-4 border-l border-dashed border-neutral-300">
+                        <!-- 出發點小圓點 -->
+                        <div class="absolute -left-1.5 top-1.5 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white"></div>
+                        <!-- 終點小圓點 -->
+                        <div class="absolute -left-1.5 bottom-1.5 w-3 h-3 rounded-full bg-rose-500 border-2 border-white"></div>
+                        
+                        <div class="space-y-0.5">
+                            <span class="text-[10px] text-neutral-400 font-bold block uppercase tracking-wide">起點</span>
+                            <span class="text-sm font-semibold text-neutral-800">${item.start}</span>
+                        </div>
+                        <div class="space-y-0.5">
+                            <span class="text-[10px] text-neutral-400 font-bold block uppercase tracking-wide">終點</span>
+                            <span class="text-sm font-semibold text-neutral-800">${item.end}</span>
+                        </div>
+                    </div>
+
+                    <!-- 出發時間與一鍵加入按鈕 -->
+                    <div class="pt-2 flex justify-between items-center border-t border-neutral-50">
+                        <div class="space-y-0.5">
+                            <span class="text-[10px] text-neutral-400 block uppercase tracking-wide">出發時間</span>
+                            <span class="text-xs font-semibold text-neutral-600"><i class="fa-regular fa-clock mr-1 text-[11px]"></i>${item.time}</span>
+                        </div>
+                        <button onclick="joinCarpool(${item.id}, '${item.contact}')" class="btn-bounce bg-neutral-900 hover:bg-black text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-sm">
+                            ${isPassenger ? '我有車載你' : '我要加入'}
+                        </button>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        // 快速搜尋過濾
+        function filterCards() {
+            const searchInput = document.getElementById('search-input');
+            renderCards(searchInput.value);
+        }
+
+        // 送出乘客找車表單
+        function handleFindCarSubmit(e) {
+            e.preventDefault();
+            const start = document.getElementById('find-start').value;
+            const end = document.getElementById('find-end').value;
+            const rawTime = document.getElementById('find-time').value;
+            const passengers = document.getElementById('find-passengers').value;
+
+            // 時間格式簡化轉換
+            const time = formatDateTime(rawTime);
+
+            const newReq = {
+                id: Date.now(),
+                type: 'passenger',
+                start: start,
+                end: end,
+                time: time,
+                count: parseInt(passengers),
+                status: '待媒合',
+                contact: '匿名同學',
+                major: '系統測試'
+            };
+
+            carpoolRequests.unshift(newReq);
+            addNotification("需求發布成功", `您已成功發布從 ${start.substring(0,6)}... 往 ${end.substring(0,6)}... 的乘客找車需求。`);
+            
+            showToast('拼車需求發布成功！');
+            document.getElementById('find-car-form').reset();
+            
+            // 跳轉至列表頁
+            switchTab('passenger');
+            openPage('view-list-page');
+        }
+
+        // 送出車主給座表單
+        function handleOfferSeatSubmit(e) {
+            e.preventDefault();
+            const start = document.getElementById('offer-start').value;
+            const end = document.getElementById('offer-end').value;
+            const rawTime = document.getElementById('offer-time').value;
+            const seats = document.getElementById('offer-seats').value;
+
+            const time = formatDateTime(rawTime);
+
+            const newReq = {
+                id: Date.now(),
+                type: 'driver',
+                start: start,
+                end: end,
+                time: time,
+                count: parseInt(seats),
+                status: '有空位',
+                contact: '熱心同學',
+                major: '系統測試'
+            };
+
+            carpoolRequests.unshift(newReq);
+            addNotification("車位發布成功", `您已成功發布從 ${start.substring(0,6)}... 往 ${end.substring(0,6)}... 的車主空座。`);
+
+            showToast('車位已發布成功！');
+            document.getElementById('offer-seat-form').reset();
+
+            // 跳轉至列表頁
+            switchTab('driver');
+            openPage('view-list-page');
+        }
+
+        // 模擬加入/預約拼車
+        function joinCarpool(id, contact) {
+            const index = carpoolRequests.findIndex(item => item.id === id);
+            if (index !== -1) {
+                const item = carpoolRequests[index];
+                if (item.count > 1) {
+                    item.count -= 1;
+                } else {
+                    // 若人數扣完則移出或改狀態
+                    carpoolRequests.splice(index, 1);
+                }
+                
+                addNotification("媒合聯繫中", `您已預約 ${contact} 的拼車行程！聯絡簡訊已發送至您的模擬手機。`);
+                showToast(`已成功向 ${contact} 送出加入請求！`);
+                renderCards();
+            }
+        }
+
+        // 日期格式化小工具
+        function formatDateTime(dateTimeStr) {
+            if (!dateTimeStr) return '即刻出發';
+            const date = new Date(dateTimeStr);
+            const today = new Date();
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+
+            let dayPart = '';
+            if (date.toDateString() === today.toDateString()) {
+                dayPart = '今天';
+            } else if (date.toDateString() === tomorrow.toDateString()) {
+                dayPart = '明天';
+            } else {
+                dayPart = `${date.getMonth() + 1}/${date.getDate()}`;
+            }
+
+            const hrs = String(date.getHours()).padStart(2, '0');
+            const mins = String(date.getMinutes()).padStart(2, '0');
+            return `${dayPart} ${hrs}:${mins}`;
+        }
+
+        // Toast 彈窗效果
+        function showToast(message) {
+            const toast = document.getElementById('toast-notification');
+            const toastMsg = document.getElementById('toast-message');
+            toastMsg.innerText = message;
+            
+            toast.classList.remove('scale-90', 'opacity-0', 'pointer-events-none');
+            toast.classList.add('scale-100', 'opacity-100');
+
+            setTimeout(() => {
+                toast.classList.remove('scale-100', 'opacity-100');
+                toast.classList.add('scale-90', 'opacity-0', 'pointer-events-none');
+            }, 3000);
+        }
+
+        // 通知歷史抽屜開關
+        let isNotifOpen = false;
+        function toggleNotificationHistory() {
+            const drawer = document.getElementById('notif-drawer');
+            if (isNotifOpen) {
+                drawer.classList.add('translate-y-full');
+                isNotifOpen = false;
+            } else {
+                drawer.classList.remove('translate-y-full');
+                isNotifOpen = true;
+                // 關閉紅點
+                document.getElementById('notif-badge').classList.add('hidden');
+            }
+        }
+
+        function closeNotifDrawer() {
+            const drawer = document.getElementById('notif-drawer');
+            drawer.classList.add('translate-y-full');
+            isNotifOpen = false;
+        }
+
+        // 動態新增通知
+        function addNotification(title, desc) {
+            const list = document.getElementById('notif-list');
+            const badge = document.getElementById('notif-badge');
+            badge.classList.remove('hidden');
+
+            const item = document.createElement('div');
+            item.className = "p-3.5 bg-neutral-50 rounded-2xl flex items-start space-x-3";
+            item.innerHTML = `
+                <div class="w-8 h-8 bg-emerald-100 rounded-full flex items-center justify-center text-emerald-600 flex-shrink-0 text-xs">
+                    <i class="fa-solid fa-sparkles"></i>
+                </div>
+                <div>
+                    <p class="text-xs font-bold">${title}</p>
+                    <p class="text-[11px] text-neutral-500 mt-0.5">${desc}</p>
+                </div>
+            `;
+            list.insertBefore(item, list.firstChild);
+        }
+
+        // 清空通知
+        function clearNotif() {
+            const list = document.getElementById('notif-list');
+            list.innerHTML = `
+                <div class="py-8 text-center text-neutral-300 text-xs">
+                    暫無新通知
+                </div>
+            `;
+        }
+
+        // 頁面預載初始化
+        window.onload = function() {
+            // 設定一些表單預設日期
+            const now = new Date();
+            now.setHours(now.getHours() + 2); // 預設 2 小時後
+            const localISOTime = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+            
+            document.getElementById('find-time').value = localISOTime;
+            document.getElementById('offer-time').value = localISOTime;
+        };
+    </script>
+</body>
+</html>
